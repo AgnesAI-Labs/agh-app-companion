@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseJudgeOutput } from '../judge.mjs'
+import { onlySnapshotLinks, parseJudgeOutput } from '../judge.mjs'
 import { TEXT } from '../tasks.mjs'
 import { decisions, harness } from './harness.js'
 
@@ -31,6 +31,101 @@ describe('judge output at the boundary', () => {
       ),
     )
     expect(out.ok && out.decisions.map((d) => d.kind)).toEqual(['create', 'append', 'ask', 'answer', 'suggest', 'ignore'])
+  })
+})
+
+describe('what counts as a link in judge-written text', () => {
+  // The question is what a chat client would make tappable. A bare name whose last label is a
+  // delegated TLD is a host even when it reads like a file name, because whoever owns that domain
+  // chooses where it leads.
+  it.each([
+    ['a scheme', 'https://example.invalid/x'],
+    ['a script scheme', 'javascript:alert(1)'],
+    ['a mail scheme', 'mailto:a@b'],
+    ['a text-message scheme', 'sms:+10000000000'],
+    ['a fullwidth scheme', 'ｈｔｔｐｓ：／／evil'],
+    ['a www host', 'www.evil'],
+    ['a www host whose last label is a file extension', 'www.foo.js'],
+    ['a bare host', 'evil.com'],
+    ['an upper-case host', 'EVIL.COM'],
+    ['a bare host with a path', 'evil.example/login'],
+    ['a host with a port', 'evil.example:8080'],
+    ['a host with a port and a path', 'evil.example:8080/x'],
+    ['a trailing-dot host', 'evil.example.'],
+    ['a trailing-dot host with a path', 'evil.example./x'],
+    ['an e-mail address', 'a@evil.example'],
+    ['a host glued to Han text', '看example.com吧'],
+    ['a host and path glued to Han text', '打开evil.com/x即可'],
+    ['an ideographic full stop between ASCII labels', 'evil。com'],
+    ['an ideographic full stop before an internationalized TLD', '例子。中国'],
+    ['a vertical ideographic full stop before an internationalized TLD', '例子︒中国'],
+    ['a fullwidth full stop', 'evil．com'],
+    ['IPv4', '203.0.113.7'],
+    ['IPv4 with a path', '203.0.113.7/x'],
+    ['IPv4 with a port', '203.0.113.7:8080'],
+    ['dotted octal IPv4', '0313.0.0161.07'],
+    ['dotted hex IPv4', '0xcb.0.0x71.7'],
+    ['a bare hex integer host with a path', '0xCB00710F/x'],
+    ['a decimal integer host behind a scheme', 'http://3405803783/'],
+    ['a hex integer host behind a scheme', 'http://0xCB00710F/'],
+    ['bracketed IPv6', '[2001:db8::1]'],
+    ['bracketed IPv6 with a port and path', '[::1]:8080/x'],
+    ['an internationalized host', '例子.中国'],
+    ['an internationalized label under an ASCII TLD', '例子.com'],
+    ['a TLD with combining marks (Devanagari)', 'उदाहरण.भारत'],
+    ['a TLD with combining marks (Thai)', 'ตัวอย่าง.ไทย'],
+    ['a label with combining marks under an ASCII TLD', 'उदाहरण.com'],
+    ['a punycode host', 'xn--fsqu00a.xn--fiqs8s'],
+    ['a punycode TLD', 'evil.xn--p1ai'],
+    ['a four-part version, which is also IPv4', '1.2.3.4'],
+    ['a file name whose extension is a TLD (.io)', 'report.io'],
+    ['a file name whose extension is a TLD (.rs)', 'main.rs'],
+    ['a file name whose extension is a TLD (.py)', 'setup.py'],
+    ['a file name whose extension is a TLD (.sh)', 'notes.sh'],
+    ['a file name whose extension is a TLD (.md)', 'README.md'],
+    ['a file name whose extension is a TLD (.java)', 'Main.java'],
+  ])('refuses %s, alone, between spaces and glued to Han text: %s', (_name, text) => {
+    for (const around of [text, `看 ${text} 这里`, `看${text}`, `${text}吧`, `看${text}吧`])
+      expect(onlySnapshotLinks(around, new Set()), around).toBe(false)
+  })
+
+  // Refused although no client may link them: the safe direction for a lookalike of a host.
+  it.each([
+    ['an ASCII full stop between Han words, read as an internationalized host', '完成.下一步'],
+    ['a fullwidth full stop between Han words', '好的．进行中'],
+    ['an ideographic full stop before a Han word that is also a TLD', '好的。公司那边已回复'],
+  ])('refuses although harmless %s: %s', (_name, text) => {
+    expect(onlySnapshotLinks(text, new Set())).toBe(false)
+  })
+
+  it.each([
+    ['a script file', 'foo.js'],
+    ['a test file', 'index.test.ts'],
+    ['a path with a line number', 'src/app/main.ts:42'],
+    ['a config file', 'package.json'],
+    ['a last label that is not a TLD', 'evil.com.js'],
+    ['a version', 'v1.2.3'],
+    ['a bare three-part version', 'Node 26.13.0'],
+    ['a decimal', '3.14'],
+    ['a decimal before Han text', '2.0版本，提升1.5倍速'],
+    ['an abbreviation', 'e.g. 这样'],
+    ['a date', '2026/11/10'],
+    ['a fraction', '3/5'],
+    ['a time', '10:30'],
+    ['a ratio', '16:9'],
+    ['a slice', '数组[1:2]'],
+    ['a task id', 'T-0001'],
+    ['Han sentences', '好的。进行中。'],
+    ['a numbered list', '1.修登录 2.改样式'],
+    ['Han sentences around a file name', '改好了。见 foo.js。'],
+  ])('lets through %s: %s', (_name, text) => {
+    expect(onlySnapshotLinks(text, new Set())).toBe(true)
+  })
+
+  it('still lets an exact snapshot link through and refuses one with a changed path', () => {
+    const links = new Set(['https://git.example/pr/7'])
+    expect(onlySnapshotLinks('PR 在 https://git.example/pr/7。', links)).toBe(true)
+    expect(onlySnapshotLinks('PR 在 https://git.example/pr/7/../8', links)).toBe(false)
   })
 })
 
@@ -193,6 +288,13 @@ describe('answers and conversation context (spec §4.19 tests)', () => {
     await h.say('现在怎么样')
     await h.tick()
     expect(h.channel.texts()).toEqual(['两个任务：\n一个在跑，一个已完成。'])
+  })
+
+  it('delivers an answer that names files and versions', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '改了 index.test.ts 和 foo.js，版本 v1.2.3。' }) })
+    await h.say('改了哪些文件')
+    await h.tick()
+    expect(h.channel.texts()).toEqual(['改了 index.test.ts 和 foo.js，版本 v1.2.3。'])
   })
 
   it('allows a link that the snapshot already holds', async () => {

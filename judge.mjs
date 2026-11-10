@@ -33,8 +33,52 @@ const CHECK = {
   ids: (v) => Array.isArray(v) && v.length > 0 && v.every(CHECK.id),
 }
 const URL_CHAR = "A-Za-z0-9\\-._~:/?#\\[\\]@!$&'*+,;=%"
-// Anything that could open or name a place: a scheme, or a dotted host with a letter TLD.
-const URL_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\b(?:mailto|javascript|data|file|tel|vbscript):|(?:^|[^a-z0-9-])(?:[a-z0-9-]+\.)+[a-z]{2,}(?![a-z0-9-])/i
+// What a chat client would make tappable, on NFKC-folded lower-case text.
+const SCHEME = /[a-z][a-z0-9+.-]*:\/\/|\b(?:mailto|javascript|data|file|tel|sms|vbscript):/u
+const WWW = /(?<![a-z0-9.-])www\.[\p{L}\p{M}\p{N}]/u
+const IPV6 = /\[[0-9a-f.]*:[0-9a-f.]*:[0-9a-f:.]*(?:%[\w.-]+)?\]/u
+const NUMERIC = /(?<![a-z0-9.-])(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){0,3}(?!\.?[a-z0-9])/gu
+// Group 1 is an ASCII or punycode TLD, group 2 a TLD in another script.
+const HOST =
+  /(?<![\p{L}\p{M}\p{N}-])(?:[\p{L}\p{M}\p{N}-]+\.)+(?:(xn--[a-z0-9-]+|[a-z]{2,63})(?![a-z0-9-])|((?:[^\P{L}a-z]|\p{M}){2,}))/gu
+// "1.修登录": a lone short number before a word in another script is a list marker.
+const LIST_MARKER = /^\d{1,2}\.[^.]+$/u
+// Delegated internationalized TLDs (IANA root zone list of 2026-11-09). An ideographic full stop
+// joins two labels only next to an ASCII label or before one of these, so a Han sentence break
+// stays text.
+const IDN_TLD = new RegExp(
+  `^(?:${[
+    'कॉम セール 佛山 ಭಾರತ 慈善 集团 在线 한국 ଭାରତ 点看 คอม ভাৰত ভারত 八卦 ישראל موقع বাংলা 公益 公司 香格里拉 网站 移动 我爱你',
+    'москва қаз католик онлайн сайт 联通 срб бг бел קום 时尚 微博 淡马锡 ファッション орг नेट ストア アマゾン 삼성',
+    'சிங்கப்பூர் 商标 商店 商城 дети мкд ею ポイント 新闻 家電 كوم 中文网 中信 中国 中國 娱乐 谷歌 భారత్ ලංකා 電訊盈科 购物 クラウド ભારત',
+    '通販 भारतम् भारत भारोत 网店 संगठन 餐厅 网络 ком укр 香港 亚马逊 食品 飞利浦 台湾 台灣 手机 мон الجزائر عمان ارامكو',
+    'ایران العليان امارات بازار موريتانيا پاکستان الاردن بارت بھارت المغرب ابوظبي البحرين السعودية',
+    'ڀارت كاثوليك سودان همراه عراق مليسيا 澳門 닷컴 政府 شبكة بيتك عرب გე 机构 组织机构 健康 ไทย سورية 招聘 рус рф',
+    'تونس 大拿 ລາວ みんな グーグル ευ ελ 世界 書籍 ഭാരതം ਭਾਰਤ 网址 닷넷 コム 天主教 游戏 vermögensberater vermögensberatung',
+    '企业 信息 嘉里大酒店 嘉里 مصر قطر 广东 இலங்கை இந்தியா հայ 新加坡 فلسطين 政务',
+  ]
+    .join(' ')
+    .split(' ')
+    .join('|')})`,
+  'u',
+)
+const IDEOGRAPHIC_DOT = /(?<=[\p{L}\p{M}\p{N}-])。(?=[\p{L}\p{M}\p{N}])/gu
+// Extensions that were not delegated TLDs in the IANA root zone list of 2026-11-09. A name ending
+// in one is a file; any other letter ending counts as a TLD, so .md, .rs, .py, .sh, .io and .java
+// count as hosts. Adding an entry is a bet that it never becomes a TLD.
+const FILE_EXTENSIONS = new Set(
+  'js mjs cjs jsx ts tsx json yaml yml toml ini cfg conf env lock txt log csv html css scss xml sql php rb kt swift go vue diff patch'.split(' '),
+)
+/** @type {((text: string) => boolean)[]} */
+const LINK_SHAPES = [
+  (t) => SCHEME.test(t) || WWW.test(t) || IPV6.test(t),
+  (t) =>
+    [...t.matchAll(NUMERIC)].some((m) => {
+      const parts = m[0].split('.')
+      return parts.length === 4 || (parts.some((p) => p.startsWith('0x')) && (parts.length > 1 || t[m.index + m[0].length] === '/'))
+    }),
+  (t) => [...t.matchAll(HOST)].some((m) => (m[2] !== undefined ? !LIST_MARKER.test(m[0]) : !FILE_EXTENSIONS.has(m[1]))),
+]
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /**
  * Every judge-written string that reaches the owner or a worker, by field type. A title is a
@@ -54,7 +98,13 @@ const NO_LINKS = new Set()
 export function onlySnapshotLinks(text, links) {
   let rest = text
   for (const link of links) rest = rest.replace(new RegExp(`${escape(link)}(?![${URL_CHAR}]*[A-Za-z0-9/#])`, 'g'), ' ')
-  return !URL_LIKE.test(rest.normalize('NFKC').replace(/[。｡]/g, '.'))
+  const folded = rest
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(IDEOGRAPHIC_DOT, (dot, at, all) =>
+      /[a-z0-9-]/.test(all[at - 1]) || /[a-z0-9]/.test(all[at + 1]) || IDN_TLD.test(all.slice(at + 1)) ? '.' : dot,
+    )
+  return !LINK_SHAPES.some((shape) => shape(folded))
 }
 
 export const JUDGE_INSTRUCTIONS = [
