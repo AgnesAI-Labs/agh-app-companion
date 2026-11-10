@@ -175,7 +175,10 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
       return { id: entry.key, origin: 'owner', text: original?.signal.text ?? '', chosenNew: true }
     }
     const signal = /** @type {import('./signals.mjs').MessageSignal} */ (entry.signal)
-    return { id: entry.key, origin: signal.origin === 'owner' ? 'owner' : 'material', text: signal.text }
+    return {
+      id: entry.key, origin: signal.origin === 'owner' ? 'owner' : 'material', text: signal.text,
+      ...(signal.candidates ? { candidates: signal.candidates } : {}),
+    }
   }
 
   function unavailable() {
@@ -238,6 +241,12 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
         outcome.set(id, { kind: 'rejected', taskIds: [], reason: 'store is full' })
       }
       for (const id of filtered.fallbacks) {
+        const onCard = (items.find((i) => i.id === id)?.candidates ?? []).filter(routing.exists)
+        if (onCard.length) {
+          choiceCard(t, id, onCard.map((taskId) => getTask(t, taskId)), TEXT.whichOnCard)
+          outcome.set(id, { kind: 'asked', taskIds: onCard.slice(0, limits.candidateMax) })
+          continue
+        }
         enqueueMessage(t, { deliveryKey: `fallback:${id}`, text: TEXT.fallback, about: id })
         outcome.set(id, { kind: 'fallback', taskIds: [] })
       }

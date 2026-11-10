@@ -38,6 +38,7 @@ import { namesOtherWorkspace } from './signals.mjs'
 
 export const TEXT = Object.freeze({
   fallback: '这句我没处理好，换个说法再试一次？',
+  whichOnCard: '这条要接到卡片上的哪个任务？',
   ended: '这条已结束，要新建吗？',
   storeFull: '存储快满了，先不新建任务。清理旧任务后再试。',
   storeWarn: '伴侣的存储用量已超过 80%，接近 95% 时会停止新建任务。',

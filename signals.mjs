@@ -5,8 +5,9 @@
  *
  * @typedef {'owner' | 'material' | 'stranger'} Origin  material = content that is not the owner's words
  * @typedef {{ source: string, eventId: string, at: string, origin: Origin, hops?: number }} SignalBase
- * @typedef {SignalBase & { kind: 'message', text: string, replyTo?: string }} MessageSignal
- *   replyTo = the task whose message the owner replied to, as the channel matched it
+ * @typedef {SignalBase & { kind: 'message', text: string, replyTo?: string, candidates?: string[] }} MessageSignal
+ *   replyTo = the task whose message the owner replied to, as the channel matched it; candidates = the
+ *   tasks of a message about several tasks the owner replied to, the only ones the judge may pick
  * @typedef {SignalBase & { kind: 'button', action: 'confirm' | 'refuse' | 'continue' | 'stop', taskId: string }} ButtonSignal
  * @typedef {SignalBase & { kind: 'choice', card: string, pick: string }} ChoiceSignal  pick = a task id or 'new'
  * @typedef {MessageSignal | ButtonSignal | ChoiceSignal} InboundSignal
@@ -31,6 +32,7 @@ const COMMANDS = [
 
 const text = (value, max = 8192) => typeof value === 'string' && value.length <= max
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const taskList = (value) => Array.isArray(value) && value.length > 0 && value.length <= 32 && value.every((id) => text(id, 64))
 
 /** Parses one inbound signal at the port boundary. @param {unknown} value @returns {{ ok: true, signal: InboundSignal, key: string } | { ok: false, error: string }} */
 export function parseSignal(value) {
@@ -43,7 +45,7 @@ export function parseSignal(value) {
   if (hops !== undefined && !(Number.isSafeInteger(hops) && /** @type {number} */ (hops) >= 0)) return { ok: false, error: 'hops is invalid' }
   const v = /** @type {Record<string, unknown>} */ (value)
   const ok = kind === 'message'
-    ? text(v.text) && (v.replyTo === undefined || text(v.replyTo, 64))
+    ? text(v.text) && (v.replyTo === undefined || text(v.replyTo, 64)) && (v.candidates === undefined || taskList(v.candidates))
     : kind === 'button'
       ? Object.hasOwn(BUTTON_EVENTS, /** @type {string} */ (v.action)) && text(v.taskId, 64)
       : kind === 'choice' && text(v.card, 200) && text(v.pick, 64)
@@ -79,10 +81,12 @@ export function route(signal, tasks) {
     if (command.kind === 'status') return { kind: 'status' }
     if (tasks.exists(match[1])) return { kind: 'command', event: /** @type {any} */ (command.event), taskId: match[1] }
   }
+  // A reply to a card about several tasks attaches only to a task on that card.
+  const onCard = (id) => !signal.candidates || signal.candidates.includes(id)
   const ids = mentionedTasks(signal.text, tasks.exists)
-  if (ids.length === 1) return { kind: 'attach', taskId: ids[0] }
+  if (ids.length === 1 && onCard(ids[0])) return { kind: 'attach', taskId: ids[0] }
   const linked = ids.length ? undefined : tasks.byPrUrl(signal.text)
-  if (linked) return { kind: 'attach', taskId: linked }
+  if (linked && onCard(linked)) return { kind: 'attach', taskId: linked }
   return { kind: 'batch' }
 }
 

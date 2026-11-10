@@ -1,5 +1,6 @@
 import { createEngine } from '../engine.mjs'
 import { LIMITS, type Limits } from '../limits.mjs'
+import type { Channel } from '../effects.mjs'
 import type { StartRequest } from '../sessions.mjs'
 import { DEFAULT_SETTINGS } from '../settings.mjs'
 import { openStore } from '../store.mjs'
@@ -58,7 +59,7 @@ export function fakeChannel() {
 type Judge = (input: JudgeInput, raw: string) => string | Reply
 type Worker = (request: StartRequest, input: string) => Reply
 
-export function harness(options: { judge?: Judge; worker?: Worker; limits?: Partial<Limits> } = {}) {
+export function harness(options: { judge?: Judge; worker?: Worker; limits?: Partial<Limits>; channel?: Channel } = {}) {
   const owned = memoryOwnedStore()
   const store = openStore(owned)
   let clock = Date.parse('2026-11-10T08:00:00.000Z')
@@ -81,7 +82,7 @@ export function harness(options: { judge?: Judge; worker?: Worker; limits?: Part
     createEngine({
       store,
       sessions: sessions.port,
-      channel: channel.port,
+      channel: options.channel ?? channel.port,
       settings: SETTINGS,
       now: () => new Date(clock).toISOString(),
       limits,

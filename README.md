@@ -13,6 +13,10 @@ the settings page. The task engine, the `publish` tool and chat delivery land in
 - `settings.mjs` owns the settings schema and the rules a schema cannot state.
 - `sessions.mjs` describes the plugin-managed sessions port the platform does not provide yet, and how
   each role's session is opened.
+- `channel-contract.mjs` holds the chat channel shapes the companion assumes, with the open
+  assumptions about the draft channel contract listed at its top; `channel.mjs` adapts a channel
+  instance to the engine (owner-only inbound, reply mapping, send-once delivery). Tested against
+  `test/fake-gateway.ts` only.
 - `client/` holds the task desk placeholder, the settings page and the navigation role.
 
 ## Tests
