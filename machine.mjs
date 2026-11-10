@@ -1,12 +1,12 @@
 /**
  * Task states and the one table that moves a task between them. The rows mirror the state table
- * in the companion design §4.3 in order; the last two rows are the additions named beside them.
+ * in the companion design §4.3 in order; the last three rows are the additions named beside them.
  *
  * @typedef {'proposed' | 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'paused' | 'abandoned' | 'expired'} TaskState
- * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused'} StateReason
+ * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused' | 'platform'} StateReason
  * @typedef {'ownerConfirm' | 'ownerRefuse' | 'proposalExpired' | 'sessionWaiting' | 'ownerAnswered' | 'approvalExpired'
  *   | 'sessionCompleted' | 'sessionFailed' | 'overBudget' | 'overHops' | 'sessionLost' | 'turnInterrupted'
- *   | 'refusedThrice' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback'} TaskEventName
+ *   | 'refusedThrice' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
  * @typedef {'resume' | 'continue' | 'reopen' | 'interrupt' | 'endedReply' | 'restore'} RowEffect
  * @typedef {{
  *   from: readonly TaskState[], on: TaskEventName, to: TaskState | 'same' | 'prior',
@@ -43,6 +43,8 @@ export const TRANSITIONS = Object.freeze([
   { from: ['queued'], on: 'slotFree', to: 'running' },
   // §4.19: the worker returned an attached message; the task goes back to where it was before.
   { from: ACTIVE, on: 'handback', to: 'prior', effect: 'restore' },
+  // The platform refused a start or send for a reason waiting cannot cure (platform-sessions.mjs).
+  { from: ACTIVE, on: 'platformRefused', to: 'paused', reason: 'platform' },
 ])
 
 /**

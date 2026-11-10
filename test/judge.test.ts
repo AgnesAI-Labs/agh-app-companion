@@ -146,7 +146,7 @@ describe('judge batches replayed from fixed model outputs', () => {
     const h = harness()
     await h.say('你好')
     await h.tick()
-    expect(h.sessions.byRole('judge')[0]!.request).toMatchObject({ workspace: '/w/companion', permission: 'read-only', retention: 'ephemeral' })
+    expect(h.sessions.byRole('judge')[0]!.request).toMatchObject({ workspace: '/w/companion', permission: 'default', retention: 'ephemeral', memoryWrites: false, skillInstalls: false })
   })
 
   it('a batch with only reference material cannot create a task, even with an owner message in the recent conversation', async () => {

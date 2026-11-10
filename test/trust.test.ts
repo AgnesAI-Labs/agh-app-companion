@@ -128,7 +128,7 @@ describe('pausing and new generations', () => {
   it('auto-resume tells the owner', async () => {
     const h = harness()
     const id = await h.create('修登录')
-    h.sessions.finish(h.sessionOf(id), 'interrupted')
+    h.sessions.finish(h.sessionOf(id), 'cancelled')
     await h.tick()
     expect(h.channel.texts()).toContain(`${id}（api）修登录：回合中断，已自动续跑一次`)
   })

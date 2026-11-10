@@ -92,8 +92,8 @@ describe('crash points (spec §4.2 step 6, §6, §8 idempotency)', () => {
     await h.tick()
     const send = h.sessions.port.send
     let armed = true
-    h.sessions.port.send = async (input) => {
-      const result = await send(input)
+    h.sessions.port.send = async (sessionId, input) => {
+      const result = await send(sessionId, input)
       if (armed) {
         armed = false
         throw new Error('crash')

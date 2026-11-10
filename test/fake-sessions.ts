@@ -1,12 +1,14 @@
 import type {
   ManagedSessions,
+  ModelRef,
   SendResult,
   SessionEvent,
   SessionStatus,
+  SessionUsage,
   StartRequest,
-  TurnOutcome,
-  Usage,
+  TurnEnd,
 } from '../sessions.mjs'
+import { ROLES } from '../sessions.mjs'
 
 type FakeSession = {
   sessionId: string
@@ -14,52 +16,83 @@ type FakeSession = {
   status: SessionStatus
   archived: boolean
   events: SessionEvent[]
-  result?: string
+  seq: number
+  turns: number
+  ended: { status: TurnEnd } | null
+  result: string | null
   keys: Set<string>
-  usage: Usage
+  usage: SessionUsage
   inputs: string[]
 }
 
 /** A scripted turn end: the fake finishes the turn as soon as it starts. */
-export type Reply = { outcome: TurnOutcome; text?: string } | undefined
+export type Reply = { outcome: TurnEnd; text?: string } | undefined
+
+/** A gate refusal as the platform raises it: an RPC error whose data names the gate. */
+export type Refusal = { reason: string; missing?: string }
+export const rpcRefusal = ({ reason, missing }: Refusal) => ({
+  code: -32010,
+  message: 'CAPABILITY_DENIED',
+  data: { reason, ...(missing ? { missing } : {}), code: 'CAPABILITY_DENIED' },
+})
+
+type Gate = (input: { op: 'start' | 'send'; workspace: string; bundle: string }) => Refusal | undefined
 
 /**
- * Stands in for the platform's plugin-managed sessions (G1) until it exists. Tests drive status
- * changes with `set`, `emit` and `finish`; nothing here proves the real platform behaves the same way.
- * `reply` scripts a turn's end from its input, which is how judge decisions are replayed.
+ * Stands in for the platform's plugin-managed sessions in the platform's shapes (managed-sessions.ts).
+ * Tests drive status changes with `set`, `emit` and `finish`, and gate refusals with `gate`; nothing
+ * here proves the real platform behaves the same way. `reply` scripts a turn's end from its input,
+ * which is how judge decisions are replayed.
  */
 export function fakeSessions(
-  options: { routes?: readonly string[]; reply?: (request: StartRequest, input: string) => Reply } = {},
+  options: { routes?: readonly ModelRef[]; reply?: (request: StartRequest, input: string) => Reply } = {},
 ) {
   const sessions = new Map<string, FakeSession>()
   const byStartKey = new Map<string, string>()
   let made = 0
+  let gate: Gate = () => undefined
+  const calls = { start: 0, send: 0 }
   const get = (sessionId: string) => {
     const session = sessions.get(sessionId)
     if (!session) throw new Error(`unknown session ${sessionId}`)
     return session
   }
-  const setStatus = (session: FakeSession, status: SessionStatus) => {
-    session.status = status
-    session.events.push({ kind: 'status', status })
+  const push = (session: FakeSession, event: Record<string, unknown>) => {
+    session.events.push({ ...event, seq: ++session.seq } as SessionEvent)
   }
-  const finish = (session: FakeSession, outcome: TurnOutcome, text?: string) => {
+  const finish = (session: FakeSession, outcome: TurnEnd, text?: string) => {
     if (text !== undefined) session.result = text
-    setStatus(session, { kind: 'idle', flags: [] })
-    session.events.push({ kind: 'turn', outcome })
+    session.status = { kind: 'idle', flags: [] }
+    session.ended = { status: outcome }
+    push(session, { kind: 'turn', turn: session.turns, status: outcome })
   }
   const begin = (session: FakeSession, input: string) => {
     session.inputs.push(input)
-    setStatus(session, { kind: 'active', flags: [] })
+    session.turns += 1
+    session.status = { kind: 'active', flags: [] }
+    push(session, { kind: 'turn', turn: session.turns, status: 'running' })
     const scripted = options.reply?.(session.request, input)
     if (scripted) finish(session, scripted.outcome, scripted.text)
   }
+  const refuse = (refusal: Refusal | undefined) => {
+    if (refusal) throw rpcRefusal(refusal)
+  }
+  const sameStart = (a: StartRequest, b: StartRequest) =>
+    JSON.stringify({ ...a, input: '' }) === JSON.stringify({ ...b, input: '' })
   const port: ManagedSessions = {
     async start(request) {
+      calls.start++
+      refuse(gate({ op: 'start', workspace: request.workspace, bundle: request.bundle }))
+      const model = request.model
+      if (model && !options.routes?.some((r) => r.route === model.route && r.model === model.model))
+        refuse({ reason: 'MODEL_ROUTE_MISSING' })
       const existing = byStartKey.get(request.startKey)
-      if (existing) return { sessionId: existing, created: false }
-      if (request.model && !options.routes?.includes(request.model))
-        throw new Error(`model route ${request.model} is not served`)
+      if (existing) {
+        const session = get(existing)
+        if (!sameStart(session.request, request)) refuse({ reason: 'START_KEY_REUSED' })
+        if (session.archived) refuse({ reason: 'SESSION_ARCHIVED' })
+        return { sessionId: existing, created: false }
+      }
       const sessionId = `s${++made}`
       const session: FakeSession = {
         sessionId,
@@ -67,8 +100,12 @@ export function fakeSessions(
         status: { kind: 'notLoaded', flags: [] },
         archived: false,
         events: [],
+        seq: 0,
+        turns: 0,
+        ended: null,
+        result: null,
         keys: new Set(),
-        usage: { tokens: null, cost: null },
+        usage: { inputTokens: null, outputTokens: null, cost: null },
         inputs: [],
       }
       sessions.set(sessionId, session)
@@ -76,38 +113,47 @@ export function fakeSessions(
       begin(session, request.input)
       return { sessionId, created: true }
     },
-    async send({ sessionId, input, idempotencyKey }): Promise<SendResult> {
+    async send(sessionId, { text, idempotencyKey }): Promise<SendResult> {
+      calls.send++
       const session = get(sessionId)
-      if (session.archived) return { kind: 'notSubmitted', reason: 'archived' }
-      if (session.keys.has(idempotencyKey)) return { kind: 'notSubmitted', reason: 'duplicateKey' }
-      if (session.status.kind !== 'idle') return { kind: 'notSubmitted', reason: 'busy' }
+      if (session.archived) return { state: 'notSubmitted', reason: 'archived' }
+      if (session.keys.has(idempotencyKey)) return { state: 'notSubmitted', reason: 'duplicateKey' }
+      if (session.status.kind === 'active') return { state: 'notSubmitted', reason: 'busy' }
+      refuse(gate({ op: 'send', workspace: session.request.workspace, bundle: session.request.bundle }))
       session.keys.add(idempotencyKey)
-      begin(session, input)
-      return { kind: 'started' }
+      begin(session, text)
+      return { state: 'started' }
     },
     async list() {
       return [...sessions.values()].map(({ sessionId, request, status, archived }) => ({
         sessionId,
         startKey: request.startKey,
-        role: request.role,
-        status,
+        bundle: request.bundle,
+        workspace: request.workspace,
+        retention: request.retention,
         archived,
+        status,
       }))
     },
-    async events(sessionId, cursor = 0) {
-      const events = get(sessionId).events
-      return { events: events.slice(cursor), cursor: events.length }
+    async events(sessionId, { afterSeq = 0 } = {}) {
+      const session = get(sessionId)
+      return {
+        events: session.events.filter((e) => e.seq > afterSeq),
+        lastSeq: Math.max(afterSeq, session.seq),
+      }
     },
     async result(sessionId) {
-      const { result } = get(sessionId)
-      return result === undefined ? undefined : { text: result }
+      const session = get(sessionId)
+      // As on the platform, reading an ended turn's result archives an ephemeral session.
+      if (session.ended && session.request.retention === 'ephemeral') session.archived = true
+      return { turn: session.ended, text: session.ended ? session.result : null }
     },
     async usage(sessionId) {
       return { ...get(sessionId).usage }
     },
     async interrupt(sessionId) {
       const session = get(sessionId)
-      if (session.status.kind === 'active') finish(session, 'interrupted')
+      if (session.status.kind === 'active') finish(session, 'cancelled')
     },
     async archive(sessionId) {
       get(sessionId).archived = true
@@ -116,19 +162,55 @@ export function fakeSessions(
   return {
     port,
     sessions,
+    calls,
+    /** Refuses matching starts and sends the way the platform's gates do, until set back. */
+    gate(next: Gate) {
+      gate = next
+    },
     set(sessionId: string, status: SessionStatus, result?: string) {
       const session = get(sessionId)
-      setStatus(session, status)
+      session.status = status
       if (result !== undefined) session.result = result
     },
-    emit(sessionId: string, event: SessionEvent) {
-      get(sessionId).events.push(event)
+    /**
+     * An approval is emitted only with the fields the platform reports: no verdict. As on the
+     * platform, a pending approval flags the session as waiting and an answered one clears the flag.
+     */
+    emit(
+      sessionId: string,
+      event: {
+        kind: 'approval'
+        state: 'pending' | 'decided' | 'expired'
+        category?: 'permission' | 'question'
+        toolName?: string
+      },
+    ) {
+      const { kind, state, category = 'permission', toolName } = event
+      const session = get(sessionId)
+      if (state === 'pending')
+        session.status = {
+          kind: 'active',
+          flags: [category === 'question' ? 'waitingOnUserInput' : 'waitingOnApproval'],
+        }
+      if (state === 'decided') session.status = { kind: 'active', flags: [] }
+      push(session, {
+        kind,
+        state,
+        category,
+        summary: '',
+        ...(toolName ? { toolName } : {}),
+      })
     },
-    finish(sessionId: string, outcome: TurnOutcome, text?: string) {
+    finish(sessionId: string, outcome: TurnEnd, text?: string) {
       finish(get(sessionId), outcome, text)
     },
-    setUsage(sessionId: string, usage: Usage) {
-      get(sessionId).usage = usage
+    /** Usage in the engine's terms; the fake reports it in the platform's (input tokens, USD cost). */
+    setUsage(sessionId: string, usage: { tokens: number | null; cost: number | null }) {
+      get(sessionId).usage = {
+        inputTokens: usage.tokens,
+        outputTokens: usage.tokens === null ? null : 0,
+        cost: usage.cost === null ? null : { amount: usage.cost, currency: 'USD' },
+      }
     },
     /** Removes a session from list(), as if the platform lost it. */
     lose(sessionId: string) {
@@ -137,7 +219,7 @@ export function fakeSessions(
       byStartKey.delete(session.request.startKey)
     },
     byRole(role: 'judge' | 'worker') {
-      return [...sessions.values()].filter((s) => s.request.role === role)
+      return [...sessions.values()].filter((s) => s.request.bundle === ROLES[role].bundle)
     },
   }
 }

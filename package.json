@@ -18,6 +18,7 @@
     "settings.mjs",
     "store.mjs",
     "sessions.mjs",
+    "platform-sessions.mjs",
     "limits.mjs",
     "machine.mjs",
     "signals.mjs",
@@ -35,7 +36,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel.mjs && node --check client/index.js",
+    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel.mjs && node --check client/index.js",
     "test": "sh scripts/companion-test.sh"
   },
   "agnes": {
@@ -77,7 +78,8 @@
               "startupTimeoutMs": 30000,
               "shutdownTimeoutMs": 5000,
               "apiVersion": "1.0.0",
-              "requires": []
+              "requires": [],
+              "sessions": true
             }
           ],
           "services": [

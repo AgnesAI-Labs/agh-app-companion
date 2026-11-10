@@ -14,8 +14,12 @@ import { INSTANCE_ID, isInstanceOwner, parseChannelEvent } from './channel-contr
  * @typedef {{ instanceId: string, targetId: string }} SessionBinding  what a worker session's `start` binds to (A10)
  * @typedef {{ kind: 'accepted' | 'duplicate', key: string } | { kind: 'dropped', reason: string } | { kind: 'invalid', error: string }} ReceiveResult
  *   every result is final: the gateway acknowledges the event once `receive` returns, and redelivers only if it throws
- * @typedef {import('./effects.mjs').Channel & { receive(raw: unknown): Promise<ReceiveResult>, binding(): Promise<SessionBinding>, status(): string | null }} ChatChannel
- *   status is the refusal from the last instance check, or null while the instance serves the owner
+ * @typedef {import('./effects.mjs').Channel & {
+ *   receive(raw: unknown): Promise<ReceiveResult>, binding(): Promise<SessionBinding>, status(): string | null,
+ *   owner: import('./store.mjs').ChannelOwner,
+ * }} ChatChannel
+ *   status is the refusal from the last instance check, or null while the instance serves the owner;
+ *   owner is the instance's owner at open
  */
 
 /** Notification titles show on a lock screen (A9), so they are fixed text with no task content. */
@@ -138,6 +142,8 @@ export async function openChannel({ settings, gateway, store, receive }) {
     },
 
     status: () => status,
+
+    owner: Object.freeze({ instanceId, userId: owner.userId }),
   }
   return { ok: true, channel: Object.freeze(channel) }
 }

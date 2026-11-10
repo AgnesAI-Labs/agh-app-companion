@@ -1,6 +1,6 @@
 import { SLOT_STATES } from './machine.mjs'
 import { handbackReason } from './signals.mjs'
-import { allTasks, choiceCard, dispose, getTask, label, transit } from './tasks.mjs'
+import { allTasks, choiceCard, dispose, enqueueMessage, getTask, label, TEXT, transit } from './tasks.mjs'
 import { recentConversation } from './context.mjs'
 
 /**
@@ -12,9 +12,9 @@ export async function reconcile(deps) {
   const rows = new Map((await deps.sessions.list()).map((row) => [row.sessionId, row]))
   // A paused task's session events (its interrupt, a turn that ended anyway) must not replay after 继续.
   for (const task of allTasks(deps.tx()).filter((t) => t.state === 'paused' && t.sessionId && rows.has(t.sessionId))) {
-    const { cursor } = await deps.sessions.events(task.sessionId, task.cursor)
+    const { lastSeq } = await deps.sessions.events(task.sessionId, { afterSeq: task.cursor })
     const tx = deps.tx()
-    tx.store.transaction(() => tx.store.putTask({ ...getTask(tx, task.id), cursor }))
+    tx.store.transaction(() => tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq }))
   }
   const tasks = allTasks(deps.tx()).filter((t) => SLOT_STATES.includes(t.state) && t.sessionId)
   for (const task of tasks) {
@@ -24,35 +24,74 @@ export async function reconcile(deps) {
       tx.store.transaction(() => transit(tx, task.id, 'sessionLost'))
       continue
     }
-    const { events, cursor } = await deps.sessions.events(task.sessionId, task.cursor)
-    const ended = events.some((e) => e.kind === 'turn' && e.outcome === 'completed')
-    const reply = ended ? ((await deps.sessions.result(task.sessionId))?.text ?? '') : ''
-    const usage = await deps.sessions.usage(task.sessionId)
+    const { events, lastSeq } = await deps.sessions.events(task.sessionId, { afterSeq: task.cursor })
+    const ended = events.some((e) => e.kind === 'turn' && e.status === 'completed')
+    const reply = ended ? ((await deps.sessions.result(task.sessionId)).text ?? '') : ''
+    const usage = reading(await deps.sessions.usage(task.sessionId))
     const tx = deps.tx()
     tx.store.transaction(() => {
-      tx.store.putTask({ ...getTask(tx, task.id), cursor })
+      tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq })
+      waitState(tx, task.id, row.status)
       for (const event of events) apply(tx, task.id, event, reply)
       account(tx, task.id, usage)
     })
   }
 }
 
+/**
+ * The platform reports waiting as a flag on the session's status, not as an event, so the task
+ * follows the status read in this pass.
+ * @param {import('./tasks.mjs').Tx} tx @param {string} taskId @param {import('./sessions.mjs').SessionStatus} status
+ */
+function waitState(tx, taskId, status) {
+  const task = getTask(tx, taskId)
+  if (status.flags.length && task.state === 'running') transit(tx, taskId, 'sessionWaiting')
+  // The session left its wait: the owner's answer or the approval result reached it.
+  if (!status.flags.length && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
+}
+
+/**
+ * Tokens are input plus output; cost is kept only in USD, the one currency the platform reports, so
+ * another currency reads as unknown rather than as a wrong number.
+ * @param {import('./sessions.mjs').SessionUsage} usage @returns {import('./tasks.mjs').Usage}
+ */
+function reading(usage) {
+  return {
+    tokens: usage.inputTokens === null || usage.outputTokens === null ? null : usage.inputTokens + usage.outputTokens,
+    cost: usage.cost && usage.cost.currency === 'USD' ? usage.cost.amount : null,
+  }
+}
+
+/**
+ * The owner approves on the local Web: a chat card cannot answer an approval and the platform sends
+ * no notice for a managed session, so the companion says, once per approval, that the task waits.
+ * The key names the session generation and the approval's seq, so a replay or restart repeats nothing.
+ * @param {import('./tasks.mjs').Tx} tx @param {import('./tasks.mjs').Task} task @param {number} seq
+ */
+function waitForApproval(tx, task, seq) {
+  if (task.state === 'running') transit(tx, task.id, 'sessionWaiting')
+  enqueueMessage(tx, { deliveryKey: `approval:${task.id}:g${task.generation}:${seq}`, text: `${label(task)}：${TEXT.approvalWaiting}`, taskIds: [task.id] })
+}
+
 /** @param {import('./tasks.mjs').Tx} tx @param {string} taskId @param {import('./sessions.mjs').SessionEvent} event @param {string} reply */
 function apply(tx, taskId, event, reply) {
   const task = getTask(tx, taskId)
-  if (event.kind === 'status' && event.status.flags.length && task.state === 'running') transit(tx, taskId, 'sessionWaiting')
-  // The session left its wait: the owner's answer or the approval result reached it.
-  if (event.kind === 'status' && !event.status.flags.length && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
   if (event.kind === 'approval' && event.state === 'expired') transit(tx, taskId, 'approvalExpired')
-  if (event.kind === 'approval' && event.state === 'answered') {
-    const refusals = event.decision === 'refused' ? task.refusals + 1 : 0
+  if (event.kind === 'approval' && event.state === 'decided' && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
+  // The platform reports neither an approval's verdict nor its later state change (the node keeps its
+  // first seq), so an approved step cannot be told from a refused one. Failing closed, every permission
+  // request first seen pending counts toward the limit, and only the owner continuing the task
+  // restarts the count. One first seen decided was answered before this pass, or allowed by full
+  // access without a person, so it is not counted.
+  if (event.kind === 'approval' && event.state === 'pending' && event.category === 'permission') {
+    const refusals = task.refusals + 1
     tx.store.putTask({ ...task, refusals })
     if (refusals >= tx.limits.refusalLimit) transit(tx, taskId, 'refusedThrice')
-    else if (task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
+    else waitForApproval(tx, getTask(tx, taskId), event.seq)
   }
-  if (event.kind !== 'turn') return
-  if (event.outcome === 'failed') return void transit(tx, taskId, 'sessionFailed')
-  if (event.outcome === 'interrupted') return void transit(tx, taskId, 'turnInterrupted')
+  if (event.kind !== 'turn' || event.status === 'running' || event.status === 'waiting') return
+  if (event.status === 'failed') return void transit(tx, taskId, 'sessionFailed')
+  if (event.status === 'cancelled') return void transit(tx, taskId, 'turnInterrupted')
   const reason = task.attach?.sent ? handbackReason(reply) : undefined
   if (reason !== undefined) return handback(tx, task, reason)
   if (task.attach?.sent) tx.store.putTask({ ...task, attach: null })

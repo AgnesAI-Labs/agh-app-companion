@@ -29,7 +29,12 @@
  *   A9  Lock screen: the chat channel previews only a card's `title`, never its body.
  *   A10 Binding: the managed-sessions `start` accepts `{ instanceId, targetId }` for a worker session;
  *       the runner then pushes native approvals to that chat and verifies each click (C4). Approval
- *       clicks never reach `receive`.
+ *       clicks never reach `receive`. Contradicted by the platform today: `start` takes no binding,
+ *       so `binding()` is not called and worker approvals are answered in the Web only.
+ *   A13 Delivery to the plugin: the gateway reaches the companion's managed service through the
+ *       `receive(event)` of the value its `start` returns. How the gateway finds that value is the
+ *       gateway plugin's to define; index.mjs resolves the gateway in one function and gets nothing
+ *       until that plugin exists.
  *   A11 Event ids are at most 128 characters and stable across redelivery.
  *   A12 Text only: attachments are ignored, and a message without text is dropped.
  *

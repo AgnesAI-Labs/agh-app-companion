@@ -1,8 +1,8 @@
 /**
  * The companion's data in its Host-owned OwnedStore namespace. Every key is listed here:
  *
- *   meta                          StoreMeta      written once, read on every start
- *   counter                       Counters       next task number and next op number
+ *   meta                          StoreMeta      format written once; channelOwner written on the first start with a channel
+ *   counter                       Counters       next task, op and refusal-notice numbers
  *   task/<taskId>                 TaskRecord
  *   events/<taskId>/<chunk>       EventChunk     <chunk> is a zero-padded index, so a prefix scan is in order
  *   inbox/<source>:<eventId>      InboxEntry     deleted 7 days after it has a disposition
@@ -12,12 +12,14 @@
  *   judge/backoff                 JudgeBackoff   set while the judge model is treated as unavailable
  *   usage/<yyyy-mm-dd>            DayUsage       session usage summed per day
  *   alerts                        Alerts         which store-size notice has been sent
+ *   refusal/<role>:<scope>        RefusalRecord  a platform refusal the owner was told about, until a task under it is continued
  *
  * Session status is computed from the platform's run facts and never stored here. Shapes of the
  * engine's records are defined next to the code that owns them (tasks.mjs, signals.mjs, effects.mjs).
  *
  * @typedef {import('@agnes/protocol').JsonValue} JsonValue
- * @typedef {{ format: number }} StoreMeta
+ * @typedef {{ instanceId: string, userId: string }} ChannelOwner
+ * @typedef {{ format: number, channelOwner?: ChannelOwner }} StoreMeta  outbox rows and status answers belong to channelOwner
  * @typedef {{ id: string, workspace: string, createdAt: string, eventChunks: number, [field: string]: any }} TaskRecord
  * @typedef {{ at: string, kind: string, data: JsonValue }} TaskEvent
  * @typedef {{ taskId: string, index: number, events: TaskEvent[] }} EventChunk
@@ -141,6 +143,12 @@ export function openStore(owned) {
         const task = getTask(taskId)
         if (task) owned.set(`task/${taskId}`, { ...task, eventChunks: 0 })
       })
+    },
+    /** The channel owner this store was used with, or undefined before its first start with a channel. @returns {ChannelOwner | undefined} */
+    channelOwner: () => owned.get('meta')?.channelOwner,
+    /** @param {ChannelOwner} channelOwner */
+    recordChannelOwner(channelOwner) {
+      owned.transaction(() => owned.set('meta', { ...owned.get('meta'), channelOwner }))
     },
     /** Key count and serialized bytes against the Host caps (10k keys, 16 MiB). */
     usage() {

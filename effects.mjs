@@ -1,6 +1,7 @@
 import { SLOT_STATES } from './machine.mjs'
+import { SessionRefusal } from './platform-sessions.mjs'
 import { startRequest } from './sessions.mjs'
-import { enqueueMessage, getTask, TEXT, transit } from './tasks.mjs'
+import { enqueueMessage, getTask, parkRefused, TEXT, transit } from './tasks.mjs'
 
 /**
  * Runs committed effects. Each carries its idempotency key (start: `taskId:generation`, send:
@@ -12,7 +13,7 @@ import { enqueueMessage, getTask, TEXT, transit } from './tasks.mjs'
  *   the IM channel port; it must drop a repeated deliveryKey (IM channel plan)
  * @typedef {{
  *   tx: () => import('./tasks.mjs').Tx, sessions: import('./sessions.mjs').ManagedSessions, channel: Channel,
- *   workspacePath: (shortName: string) => string | undefined, workerModel: string,
+ *   workspacePath: (shortName: string) => string | undefined,
  * }} EffectDeps
  */
 
@@ -58,10 +59,11 @@ export async function runSessionOps(deps) {
       let sessionId
       try {
         ;({ sessionId } = await deps.sessions.start(
-          startRequest('worker', { workspace, input: op.input, startKey: `${op.taskId}:${op.generation}`, model: deps.workerModel }),
+          startRequest('worker', { workspace, input: op.input, startKey: `${op.taskId}:${op.generation}` }),
         ))
-      } catch {
+      } catch (error) {
         blocked.add(op.taskId)
+        if (error instanceof SessionRefusal && !error.retryable) park(deps, op.taskId, error, workspace, key)
         continue
       }
       const done = deps.tx()
@@ -77,14 +79,16 @@ export async function runSessionOps(deps) {
     }
     let result
     try {
-      result = await deps.sessions.send({ sessionId: current.sessionId, input: op.input, idempotencyKey: op.key })
-    } catch {
+      result = await deps.sessions.send(current.sessionId, { text: op.input, idempotencyKey: op.key })
+    } catch (error) {
       blocked.add(op.taskId)
+      // The owner's message stays queued and goes in once the owner continues the task.
+      if (error instanceof SessionRefusal && !error.retryable) park(deps, op.taskId, error, deps.workspacePath(current.workspace) ?? current.workspace, null)
       continue
     }
     const after = deps.tx()
     after.store.transaction(() => {
-      if (result.kind === 'started' || result.reason === 'duplicateKey') {
+      if (result.state === 'started' || result.reason === 'duplicateKey') {
         const sent = getTask(after, op.taskId)
         if (sent.attach && sent.attach.inbox === op.inbox) after.store.putTask({ ...sent, attach: { ...sent.attach, sent: true } })
         return after.store.delete(key)
@@ -97,6 +101,19 @@ export async function runSessionOps(deps) {
       }
     })
   }
+}
+
+/**
+ * Parks a task on a refusal waiting cannot cure; a refused start's op goes with it, since continuing
+ * opens a new generation.
+ * @param {EffectDeps} deps @param {string} taskId @param {SessionRefusal} refusal @param {string} workspace @param {string | null} startOp
+ */
+function park(deps, taskId, refusal, workspace, startOp) {
+  const tx = deps.tx()
+  tx.store.transaction(() => {
+    if (startOp) tx.store.delete(startOp)
+    parkRefused(tx, taskId, refusal, workspace)
+  })
 }
 
 /** Hands undelivered messages to the channel in the order they were committed. @param {EffectDeps} deps */

@@ -45,6 +45,7 @@ export const TEXT = Object.freeze({
   storeWarn: '伴侣的存储用量已超过 80%，接近 95% 时会停止新建任务。',
   judgeDown: '判断模型连续不可用，你的消息还在排队，恢复后会处理。',
   busy: '会话正忙，这条先存着，空闲后送进去。',
+  approvalWaiting: '在等你审批，请到电脑上处理。',
   worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具。',
   attach: '先判断这条和本任务有没有关系，无关就只回一行“退回：原因”，不要动手。',
   resume: '上一回合中断了，请从中断处继续。',
@@ -58,7 +59,8 @@ const REASON_TEXT = {
   hops: '超跳数',
   sessionLost: '会话丢失',
   turnInterrupted: '回合中断',
-  refused: '多次被拒',
+  refused: '审批多次未见批准',
+  platform: '平台拒绝',
 }
 const STATE_TEXT = {
   proposed: '提议中', queued: '排队中', running: '进行中', waiting: '等你', done: '完成',
@@ -78,10 +80,10 @@ const DETAIL_MAX = 200
 const clip = (value) => ([...value].length > DETAIL_MAX ? `${[...value].slice(0, DETAIL_MAX).join('')}…` : value)
 export const hash = (value) => createHash('sha256').update(value).digest('hex')
 
-/** @param {Tx} tx @param {'task' | 'op'} kind */
+/** @param {Tx} tx @param {'task' | 'op' | 'refusal'} kind */
 function next(tx, kind) {
   const counter = tx.store.get('counter') ?? { task: 0, op: 0 }
-  const value = counter[kind] + 1
+  const value = (counter[kind] ?? 0) + 1
   tx.store.set('counter', { ...counter, [kind]: value })
   return value
 }
@@ -145,7 +147,7 @@ const slotsUsed = (tx, workspace, exceptId) =>
 /**
  * Applies one table event to a task: state, reason, task event, effects, then the workspace queue.
  * Returns false when the table has no row for the event in the task's state.
- * @param {Tx} tx @param {string} taskId @param {TaskEventName} event @param {{ about?: string, note?: string }} [detail]
+ * @param {Tx} tx @param {string} taskId @param {TaskEventName} event @param {{ about?: string, note?: string, quiet?: boolean }} [detail]
  */
 export function transit(tx, taskId, event, detail = {}) {
   const task = getTask(tx, taskId)
@@ -159,7 +161,7 @@ export function transit(tx, taskId, event, detail = {}) {
     reason = null
   }
   const hadSession = task.sessionId !== null && SLOT_STATES.includes(from)
-  const lost = task.reason === 'sessionLost'
+  const lost = task.reason === 'sessionLost' || (task.reason === 'platform' && task.sessionId === null)
   switch (row.effect) {
     case 'resume':
       task.resumed += 1
@@ -170,6 +172,7 @@ export function transit(tx, taskId, event, detail = {}) {
       task.refusals = 0
       task.resumed = 0
       if (task.reason === 'budget') task.budgetBase = { ...task.usage }
+      clearRefusals(tx, taskId)
       if (lost) {
         task.generation += 1
         task.sessionId = null
@@ -196,10 +199,47 @@ export function transit(tx, taskId, event, detail = {}) {
   const seq = record(tx, task, 'state', { event, from, to, reason, ...(detail.note ? { note: detail.note } : {}) })
   if (row.effect === 'continue' && !lost)
     enqueueOp(tx, { taskId, kind: 'send', input: TEXT.continue, key: `${taskId}:${seq}`, inbox: null, busyNoticed: false })
-  if (from !== to && NOTIFY.has(to))
+  if (from !== to && NOTIFY.has(to) && !detail.quiet)
     enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.note ? { detail: detail.note } : {}), taskIds: [taskId] })
   if (SLOT_STATES.includes(from) && !SLOT_STATES.includes(to)) admit(tx, task.workspace)
   return true
+}
+
+/**
+ * Parks a task the platform refused, and tells the owner once per refusal episode: one notice per
+ * role and scope (a workspace, the deployment, or the task's start key) until the owner continues a
+ * task under it. A later task refused for the same reason gets only its own pause notice.
+ * @param {Tx} tx @param {string} taskId @param {import('./platform-sessions.mjs').SessionRefusal} refusal @param {string} workspace path
+ */
+export function parkRefused(tx, taskId, refusal, workspace) {
+  const task = getTask(tx, taskId)
+  const told = noteRefusal(tx, refusal, { role: 'worker', workspace, taskId, prefix: `${label(task)}：已暂停。` })
+  transit(tx, taskId, 'platformRefused', { note: refusal.code, quiet: told })
+}
+
+/**
+ * Records a refusal under `refusal/<role>:<scope>` and enqueues its notice if that key is new;
+ * returns whether it did.
+ * @param {Tx} tx @param {import('./platform-sessions.mjs').SessionRefusal} refusal
+ * @param {{ role: 'judge' | 'worker', workspace: string, taskId: string | null, prefix: string }} where
+ */
+export function noteRefusal(tx, refusal, { role, workspace, taskId, prefix }) {
+  const scope = refusal.scope === 'workspace' ? `workspace:${workspace}` : refusal.scope === 'start' ? `task:${taskId}` : `platform:${refusal.code}`
+  const key = `refusal/${role}:${scope}`
+  const record = tx.store.get(key)
+  if (record) {
+    if (taskId && !record.taskIds.includes(taskId)) tx.store.set(key, { ...record, taskIds: [...record.taskIds, taskId] })
+    return false
+  }
+  const text = `${prefix}${refusal.text(workspace)}`
+  tx.store.set(key, { role, code: refusal.code, missing: refusal.missing, workspace, taskIds: taskId ? [taskId] : [], at: tx.at, text })
+  enqueueMessage(tx, { deliveryKey: `refusal:${next(tx, 'refusal')}`, text, taskIds: taskId ? [taskId] : [] })
+  return true
+}
+
+/** Ends the refusal episodes naming a task, so a repeat refusal after the owner continues is told again. @param {Tx} tx @param {string} taskId */
+function clearRefusals(tx, taskId) {
+  for (const { key, value } of tx.store.scan('refusal/')) if (value.taskIds.includes(taskId)) tx.store.delete(key)
 }
 
 /** Starts queued tasks while the workspace has free slots, oldest first. @param {Tx} tx @param {string} workspace */

@@ -1,7 +1,8 @@
 import { createEngine } from '../engine.mjs'
 import { LIMITS, type Limits } from '../limits.mjs'
 import type { Channel } from '../effects.mjs'
-import type { StartRequest } from '../sessions.mjs'
+import { platformSessions } from '../platform-sessions.mjs'
+import { ROLES, type StartRequest } from '../sessions.mjs'
 import { DEFAULT_SETTINGS } from '../settings.mjs'
 import { openStore } from '../store.mjs'
 import { fakeSessions, type Reply } from './fake-sessions.js'
@@ -68,7 +69,7 @@ export function harness(options: { judge?: Judge; worker?: Worker; limits?: Part
   const judgeInputs: JudgeInput[] = []
   const sessions = fakeSessions({
     reply(request, input) {
-      if (request.role === 'worker') return worker?.(request, input)
+      if (request.bundle === ROLES.worker.bundle) return worker?.(request, input)
       const parsed = readJudgeInput(input)
       judgeInputs.push(parsed)
       const out = judge(parsed, input)
@@ -81,7 +82,8 @@ export function harness(options: { judge?: Judge; worker?: Worker; limits?: Part
   const engine = () =>
     createEngine({
       store,
-      sessions: sessions.port,
+      // The real adapter, so every engine test also runs the platform refusal mapping.
+      sessions: platformSessions(sessions.port)!,
       channel: options.channel ?? channel.port,
       settings: SETTINGS,
       now: () => new Date(clock).toISOString(),

@@ -46,7 +46,7 @@ const button = (h: ReturnType<typeof harness>, action: string, taskId: string) =
 
 describe('state table (spec §4.3), one test per row', () => {
   it('has a row for every spec row plus the queue and return rows', () => {
-    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(20)
+    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(21)
   })
 
   it('proposed, owner confirms: running, and its session starts', async () => {
@@ -84,12 +84,9 @@ describe('state table (spec §4.3), one test per row', () => {
     expect(h.task(id).state).toBe('waiting')
   })
 
-  it.each([
-    ['approval granted', { kind: 'approval', state: 'answered', decision: 'approved' }],
-    ['approval refused', { kind: 'approval', state: 'answered', decision: 'refused' }],
-  ] as const)('waiting, %s: running, and the session handles it', async (_name, event) => {
+  it('waiting, approval answered: running, and the session handles it', async () => {
     const { h, id, sid } = await waiting()
-    h.sessions.emit(sid, event)
+    h.sessions.emit(sid, { kind: 'approval', state: 'decided' })
     h.sessions.set(sid, { kind: 'active', flags: [] })
     await h.tick()
     expect(h.task(id).state).toBe('running')
@@ -150,7 +147,7 @@ describe('state table (spec §4.3), one test per row', () => {
 
   it('running, turn interrupted: resumed once with a fixed key, still running', async () => {
     const { h, id, sid } = await running()
-    h.sessions.finish(sid, 'interrupted')
+    h.sessions.finish(sid, 'cancelled')
     await h.tick()
     expect(h.task(id).state).toBe('running')
     expect([...h.sessions.sessions.get(sid)!.keys]).toEqual([`${id}:g0:resume`])
@@ -159,27 +156,64 @@ describe('state table (spec §4.3), one test per row', () => {
 
   it('running, interrupted again after the resume: paused (turn interrupted)', async () => {
     const { h, id, sid } = await running()
-    h.sessions.finish(sid, 'interrupted')
+    h.sessions.finish(sid, 'cancelled')
     await h.tick()
-    h.sessions.finish(sid, 'interrupted')
+    h.sessions.finish(sid, 'cancelled')
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'turnInterrupted' })
     expect(h.sessions.sessions.get(sid)!.keys.size).toBe(1)
   })
 
-  it.each(['running', 'waiting'] as const)('%s, three refused approvals in a row: paused (refused)', async (from) => {
+  // The platform reports no verdict, so every permission request first seen pending counts (reconcile.mjs, failing closed).
+  it.each(['running', 'waiting'] as const)('%s, three permission requests in a row: paused (refused), told once', async (from) => {
     const r = from === 'running' ? await running() : await waiting()
-    for (let n = 0; n < 2; n++) r.h.sessions.emit(r.sid, { kind: 'approval', state: 'answered', decision: 'refused' })
-    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'answered', decision: 'approved' })
+    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
+    await r.h.tick()
+    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
     await r.h.tick()
     expect(r.h.task(r.id).state).not.toBe('paused')
-    for (let n = 0; n < 2; n++) r.h.sessions.emit(r.sid, { kind: 'approval', state: 'answered', decision: 'refused' })
-    await r.h.tick()
-    expect(r.h.task(r.id).state).not.toBe('paused')
-    if (from === 'waiting') r.h.sessions.set(r.sid, waitingFlag)
-    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'answered', decision: 'refused' })
+    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
     await r.h.tick()
     expect(r.h.task(r.id)).toMatchObject({ state: 'paused', reason: 'refused' })
+    await r.h.tick()
+    expect(r.h.channel.texts().filter((t) => t.includes(r.id) && t.includes('已暂停'))).toEqual([`${r.id}（api）修一下登录页的报错：已暂停（审批多次未见批准）`])
+  })
+
+  it('approvals first seen decided, questions and expired approvals do not count; continuing restarts the count', async () => {
+    const { h, id, sid } = await running()
+    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'decided' })
+    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'pending', category: 'question' })
+    h.sessions.set(sid, { kind: 'active', flags: [] })
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
+    expect(h.channel.texts().filter((t) => t.includes(TEXT.approvalWaiting))).toEqual([])
+    h.sessions.emit(sid, { kind: 'approval', state: 'expired' })
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
+    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'pending' })
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'refused' })
+    h.sessions.set(sid, { kind: 'idle', flags: [] })
+    await button(h, 'continue', id)
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
+  })
+
+  it('running, session asks for an approval: waiting, and the owner is told once to approve on the computer', async () => {
+    const { h, id, sid } = await running()
+    h.sessions.emit(sid, { kind: 'approval', state: 'pending', toolName: 'shell' })
+    await h.tick()
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    h.restart()
+    await h.tick()
+    const notices = [...h.channel.delivered.values()].filter((m) => m.text.includes(TEXT.approvalWaiting))
+    expect(notices.map((m) => ({ text: m.text, detail: m.detail, card: m.card }))).toEqual([
+      { text: `${id}（api）修一下登录页的报错：${TEXT.approvalWaiting}`, detail: null, card: null },
+    ])
+    h.sessions.emit(sid, { kind: 'approval', state: 'pending' })
+    await h.tick()
+    expect([...h.channel.delivered.values()].filter((m) => m.text.includes(TEXT.approvalWaiting))).toHaveLength(2)
   })
 
   it('paused, owner continues: running in the same session', async () => {
@@ -232,7 +266,7 @@ describe('state table (spec §4.3), one test per row', () => {
     const { h, id, sid } = await running()
     await button(h, 'stop', id)
     await h.tick()
-    expect(h.sessions.sessions.get(sid)!.events.at(-1)).toEqual({ kind: 'turn', outcome: 'interrupted' })
+    expect(h.sessions.sessions.get(sid)!.events.at(-1)).toMatchObject({ kind: 'turn', status: 'cancelled' })
   })
 
   it.each(['abandoned', 'expired'] as const)('%s, owner speaks under it: not reopened, asked to create anew', async (end) => {

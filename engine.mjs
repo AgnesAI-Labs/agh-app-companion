@@ -3,11 +3,12 @@ import { deliverOutbox, runSessionOps } from './effects.mjs'
 import { housekeeping } from './housekeeping.mjs'
 import { filterDecisions, judgeInput, parseJudgeOutput } from './judge.mjs'
 import { LIMITS } from './limits.mjs'
+import { SessionRefusal } from './platform-sessions.mjs'
 import { reconcile } from './reconcile.mjs'
 import { startRequest } from './sessions.mjs'
 import { parseSignal, route } from './signals.mjs'
 import {
-  allTasks, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, label, stateText,
+  allTasks, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, label, noteRefusal, stateText,
   statusText, TEXT, transit,
 } from './tasks.mjs'
 
@@ -38,7 +39,6 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     sessions,
     channel,
     workspacePath: (name) => settings.workspaces.find((w) => w.shortName === name)?.path,
-    workerModel: settings.models.worker.route,
   }
   const routing = {
     exists: (id) => store.getTask(id) !== undefined,
@@ -146,16 +146,20 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
             workspace: settings.dedicatedWorkspace,
             input: judgeInput({ snapshot: view, recent, batch: items }),
             startKey: `judge:${hash(`${batch.startedAt}\n${batch.keys.join('\n')}`).slice(0, 24)}:${batch.attempt}`,
-            model: settings.models.judge.route,
           }),
         )
-        const { events } = await sessions.events(sessionId)
-        const end = events.find((e) => e.kind === 'turn')
-        if (!end) return
-        if (end.kind === 'turn' && end.outcome !== 'completed') return unavailable()
-        text = (await sessions.result(sessionId))?.text ?? ''
-      } catch {
-        return unavailable()
+        const result = await sessions.result(sessionId)
+        if (!result.turn) return
+        if (result.turn.status !== 'completed') return unavailable()
+        text = result.text ?? ''
+      } catch (error) {
+        // Reading the result archives an ephemeral session, so a batch replayed after a crash needs a new key.
+        if (error instanceof SessionRefusal && error.code === 'SESSION_ARCHIVED') {
+          batch = { ...batch, attempt: batch.attempt + 1 }
+          store.set('judge/batch', batch)
+          continue
+        }
+        return unavailable(error instanceof SessionRefusal && !error.retryable ? error : undefined)
       }
       const parsed = parseJudgeOutput(text)
       if (!parsed.ok) {
@@ -181,14 +185,20 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     }
   }
 
-  function unavailable() {
+  /**
+   * The judge could not answer. Its messages stay queued and the next try waits longer. A refusal
+   * waiting cannot cure is told once (noteRefusal) instead of as the model being down.
+   * @param {SessionRefusal} [refusal]
+   */
+  function unavailable(refusal) {
     const t = tx()
     t.store.transaction(() => {
       const failures = (t.store.get('judge/backoff')?.failures ?? 0) + 1
       const wait = Math.min(30, 2 ** (failures - 1)) * MINUTE
       t.store.set('judge/backoff', { failures, until: new Date(Date.parse(t.at) + wait).toISOString() })
       t.store.delete('judge/batch')
-      if (failures === limits.judgeFailuresNotify) enqueueMessage(t, { deliveryKey: `judge:down:${t.at}`, text: TEXT.judgeDown })
+      if (refusal) noteRefusal(t, refusal, { role: 'judge', workspace: settings.dedicatedWorkspace, taskId: null, prefix: '你的消息还在排队，伴侣现在不能判断。' })
+      else if (failures === limits.judgeFailuresNotify) enqueueMessage(t, { deliveryKey: `judge:down:${t.at}`, text: TEXT.judgeDown })
     })
   }
 
@@ -256,11 +266,14 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
       }
       t.store.delete('judge/batch')
       t.store.delete('judge/backoff')
+      for (const { key } of t.store.scan('refusal/judge:')) t.store.delete(key)
     })
   }
 
   return Object.freeze({
     receive,
+    /** Session facts into the table, as at the start of a tick; the service runs it once at start. */
+    reconcile: () => reconcile(effects),
     /** One pass of the engine; each step resumes from the store. */
     async tick() {
       triage()
