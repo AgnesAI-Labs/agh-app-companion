@@ -255,6 +255,49 @@
                         }
                       }
                     }
+                  },
+                  "caps": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "dailyCost": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": 1000000000
+                          }
+                        ]
+                      },
+                      "taskCost": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": 1000000000
+                          }
+                        ]
+                      },
+                      "taskTokens": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": 1000000000,
+                            "multipleOf": 1
+                          }
+                        ]
+                      }
+                    }
                   }
                 }
               },

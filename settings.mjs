@@ -12,7 +12,9 @@
  *   dedicatedWorkspace: string,
  *   channelInstance: string,
  *   models: { judge: ModelChoice, worker: ModelChoice },
+ *   caps?: Caps,
  * }} Settings
+ * @typedef {{ dailyCost: number | null, taskCost: number | null, taskTokens: number | null }} Caps  usage caps the engine enforces; null = not enforced (the design sets no default amount, §10). Money in USD.
  */
 const model = {
   type: 'object',
@@ -20,6 +22,8 @@ const model = {
   required: ['route', 'local'],
   properties: { route: { type: 'string', maxLength: 128 }, local: { type: 'boolean' } },
 }
+
+const cap = (extra) => ({ anyOf: [{ type: 'null' }, { type: 'number', exclusiveMinimum: 0, maximum: 1e9, ...extra }] })
 
 export const SETTINGS_SCHEMA = {
   type: 'object',
@@ -48,6 +52,12 @@ export const SETTINGS_SCHEMA = {
       required: ['judge', 'worker'],
       properties: { judge: model, worker: model },
     },
+    // Optional so a configuration saved before the caps existed stays valid.
+    caps: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { dailyCost: cap({}), taskCost: cap({}), taskTokens: cap({ multipleOf: 1 }) },
+    },
   },
 }
 
@@ -58,6 +68,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   dedicatedWorkspace: '',
   channelInstance: '',
   models: { judge: { route: '', local: false }, worker: { route: '', local: false } },
+  caps: { dailyCost: null, taskCost: null, taskTokens: null },
 })
 
 const absolute = (path) => path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)

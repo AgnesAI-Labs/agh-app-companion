@@ -59,4 +59,28 @@ describe('companion settings', () => {
   it('treats a blank owner name as missing, not configured', () => {
     expect(missingSettings({ ...complete, ownerName: '   ' })).toEqual(['ownerName'])
   })
+
+  describe('usage caps', () => {
+    it('defaults to no cap, because the design sets no amount (spec section 10)', () => {
+      expect(DEFAULT_SETTINGS.caps).toEqual({ dailyCost: null, taskCost: null, taskTokens: null })
+    })
+
+    it('accepts a configuration saved before caps existed, and one with caps set or cleared', () => {
+      expect(hostAccepts(complete)).toBe(true)
+      expect(hostAccepts({ ...complete, caps: { dailyCost: 5, taskCost: 1.5, taskTokens: 200000 } })).toBe(true)
+      expect(hostAccepts({ ...complete, caps: { dailyCost: null, taskCost: null, taskTokens: null } })).toBe(true)
+      expect(hostAccepts({ ...complete, caps: { dailyCost: 5 } })).toBe(true)
+    })
+
+    it.each([
+      ['zero', { dailyCost: 0 }],
+      ['a negative cost', { taskCost: -1 }],
+      ['text', { dailyCost: '5' }],
+      ['fractional tokens', { taskTokens: 10.5 }],
+      ['an unknown cap', { dailyTokens: 10 }],
+      ['a non-finite-sized number', { dailyCost: 1e12 }],
+    ])('refuses %s', (_name, caps) => {
+      expect(hostAccepts({ ...complete, caps })).toBe(false)
+    })
+  })
 })

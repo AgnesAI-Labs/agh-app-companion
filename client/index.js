@@ -16,6 +16,12 @@ const MODEL_ROLES = [
   ['worker', '任务执行'],
 ]
 
+const CAP_FIELDS = [
+  ['dailyCost', '每日费用上限（美元，留空不限）'],
+  ['taskCost', '单任务费用上限（美元，留空不限）'],
+  ['taskTokens', '单任务 token 上限（留空不限）'],
+]
+
 const workspacesText = (list) => list.map((w) => `${w.shortName}=${w.path}`).join('\n')
 const workspacesFrom = (text) =>
   text
@@ -101,6 +107,18 @@ function Settings({ services }) {
             ' 我确认这个路由在本机',
           ),
         ),
+      ),
+    ),
+    ...CAP_FIELDS.map(([key, label]) =>
+      field(
+        label,
+        h('input', {
+          type: 'number',
+          min: 0,
+          step: 'any',
+          value: draft.caps?.[key] ?? '',
+          onChange: (e) => set({ caps: { ...draft.caps, [key]: e.target.value === '' ? null : Number(e.target.value) } }),
+        }),
       ),
     ),
     h('button', { type: 'button', onClick: save }, '保存'),

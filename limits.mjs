@@ -46,3 +46,18 @@ export const LIMITS = Object.freeze({
   // How long shutdown waits for a pass in flight; below the declared shutdownTimeoutMs (5000).
   shutdownSettleMs: 4000,
 })
+
+/**
+ * The limits with the owner's caps from settings laid over them. An unset cap keeps the base value,
+ * so a configuration without caps behaves exactly as before.
+ * @param {Limits} base @param {{ caps?: Partial<import('./settings.mjs').Caps> }} settings @returns {Limits}
+ */
+export function withCaps(base, settings) {
+  const caps = settings.caps ?? {}
+  return Object.freeze({
+    ...base,
+    dailyCost: caps.dailyCost ?? base.dailyCost,
+    taskCost: caps.taskCost ?? base.taskCost,
+    taskTokens: caps.taskTokens ?? base.taskTokens,
+  })
+}

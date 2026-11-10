@@ -1,7 +1,7 @@
 import { openChannel } from './channel.mjs'
 import { buildDesk, deskServices, submitDesk } from './desk.mjs'
 import { createEngine } from './engine.mjs'
-import { LIMITS } from './limits.mjs'
+import { LIMITS, withCaps } from './limits.mjs'
 import { platformSessions, SessionRefusal } from './platform-sessions.mjs'
 import { publishPlanTool, publishTool } from './publish.mjs'
 import { DEFAULT_SETTINGS, missingSettings, parseSettings, SETTINGS_SCHEMA } from './settings.mjs'
@@ -57,7 +57,7 @@ const NO_CHANNEL = Object.freeze({
  */
 export async function startEngine(
   init,
-  { resolveGateway = resolveChannelGateway, now, limits = LIMITS, prRepo = taskRepo } = {},
+  { resolveGateway = resolveChannelGateway, now, limits: baseLimits = LIMITS, prRepo = taskRepo } = {},
 ) {
   // Registered first: once the Host has called start it counts the resource as live, and a start that
   // throws before a shutdown handler exists is reported as an unconfirmed shutdown that no retry clears.
@@ -83,7 +83,7 @@ export async function startEngine(
     const settled = await Promise.race([
       pending.then(() => true),
       new Promise((resolve) => {
-        deadline = setTimeout(() => resolve(false), limits.shutdownSettleMs)
+        deadline = setTimeout(() => resolve(false), baseLimits.shutdownSettleMs)
       }),
     ])
     clearTimeout(deadline)
@@ -94,6 +94,7 @@ export async function startEngine(
   const parsed = parseSettings(/** @type {never} */ (init.config))
   if (!parsed.ok) throw new Error(`companion settings are invalid: ${parsed.errors.join('; ')}`)
   const settings = parsed.value
+  const limits = withCaps(baseLimits, settings)
 
   /** @type {Problem[]} */
   const blockers = []

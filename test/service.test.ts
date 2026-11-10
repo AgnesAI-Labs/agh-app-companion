@@ -71,6 +71,15 @@ describe('companion service', () => {
     vi.useRealTimers()
   })
 
+  it('reads the owner caps from settings: the desk shows them and unset caps stay off', async () => {
+    const withCaps = await service({ sessions: scripted().port, config: { ...SETTINGS, caps: { dailyCost: 4, taskCost: null, taskTokens: 5000 } } }).started
+    expect(((await withCaps.desk()) as any).usage.caps).toMatchObject({ dailyCost: 4, taskCost: null, taskTokens: 5000 })
+    const without = await service({ sessions: scripted().port, config: SETTINGS }).started
+    expect(((await without.desk()) as any).usage.caps).toMatchObject({ dailyCost: null, taskCost: null, taskTokens: null })
+    const old = await service({ sessions: scripted().port, config: (({ caps, ...rest }) => rest)(SETTINGS as any) }).started
+    expect(((await old.desk()) as any).usage.caps).toMatchObject({ dailyCost: null })
+  })
+
   it('runs the whole loop: a chat message becomes a task, its worker runs, and the result comes back', async () => {
     const sessions = scripted()
     const gateway = fakeGateway()
