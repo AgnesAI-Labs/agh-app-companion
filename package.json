@@ -1,0 +1,365 @@
+{
+  "name": "@agh-apps/companion",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agh-plugin",
+    "agnes-harness",
+    "companion"
+  ],
+  "engines": {
+    "node": ">=24.10"
+  },
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "settings.mjs",
+    "store.mjs",
+    "sessions.mjs",
+    "client",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node --check index.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check client/index.js",
+    "test": "sh scripts/companion-test.sh"
+  },
+  "agnes": {
+    "provides": [
+      "tool",
+      "ui",
+      "bundle"
+    ],
+    "plugins": [
+      {
+        "id": "ext:@agh-apps/companion/main",
+        "export": "main",
+        "apiRange": "^5.0.0",
+        "runtime": "in-process",
+        "inject": [
+          "services",
+          "profileRuntime"
+        ],
+        "capabilities": {
+          "ui": true,
+          "store": true,
+          "tools": {
+            "prefix": "",
+            "names": [
+              "publish"
+            ]
+          },
+          "managedServices": [
+            {
+              "id": "companion",
+              "scope": "profile",
+              "artifact": {
+                "kind": "in-process"
+              },
+              "healthPath": "/health",
+              "listeners": [],
+              "startupTimeoutMs": 30000,
+              "shutdownTimeoutMs": 5000,
+              "apiVersion": "1.0.0",
+              "requires": []
+            }
+          ],
+          "services": [
+            {
+              "name": "companion.status",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "query"
+            },
+            {
+              "name": "companion.configuration",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "query"
+            },
+            {
+              "name": "companion.check",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "query"
+            },
+            {
+              "name": "companion.retry",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "effect",
+              "effectPolicy": {
+                "isDestructive": true,
+                "isOpenWorld": true,
+                "replay": "never",
+                "requiresApproval": "always",
+                "approvalScopes": []
+              }
+            },
+            {
+              "name": "companion.reconcile",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "effect",
+              "effectPolicy": {
+                "isDestructive": true,
+                "isOpenWorld": true,
+                "replay": "never",
+                "requiresApproval": "always",
+                "approvalScopes": []
+              }
+            },
+            {
+              "name": "companion.configure",
+              "scope": "profile",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ownerName",
+                  "workspaces",
+                  "dedicatedWorkspace",
+                  "channelInstance",
+                  "models"
+                ],
+                "properties": {
+                  "ownerName": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "workspaces": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "shortName",
+                        "path"
+                      ],
+                      "properties": {
+                        "shortName": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4096
+                        }
+                      }
+                    }
+                  },
+                  "dedicatedWorkspace": {
+                    "type": "string",
+                    "maxLength": 4096
+                  },
+                  "channelInstance": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "models": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "judge",
+                      "worker"
+                    ],
+                    "properties": {
+                      "judge": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "route",
+                          "local"
+                        ],
+                        "properties": {
+                          "route": {
+                            "type": "string",
+                            "maxLength": 128
+                          },
+                          "local": {
+                            "type": "boolean"
+                          }
+                        }
+                      },
+                      "worker": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "route",
+                          "local"
+                        ],
+                        "properties": {
+                          "route": {
+                            "type": "string",
+                            "maxLength": 128
+                          },
+                          "local": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "outputSchema": {},
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "kind": "effect",
+              "effectPolicy": {
+                "isDestructive": true,
+                "isOpenWorld": true,
+                "replay": "never",
+                "requiresApproval": "always",
+                "approvalScopes": []
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "clientDescriptors": [
+      {
+        "rowId": "ext:@agh-apps/companion/main",
+        "path": "./client/agnes.client.json"
+      }
+    ],
+    "bundles": {
+      "judge": {
+        "presets": {
+          "companion-judge": {
+            "name": "companion-judge",
+            "extends": "minimal",
+            "surfaces": [
+              "daemon",
+              "sdk"
+            ],
+            "tools": {
+              "allow": []
+            },
+            "model": {
+              "system_prompt": {
+                "fullOverride": "你是伴侣的判断会话。你没有任何工具，也不要假装调用工具。读完本批输入后只输出一个 JSON 对象，不输出其他文字。"
+              }
+            }
+          }
+        },
+        "launch": {
+          "title": {
+            "en": "Companion judge",
+            "zh-CN": "伴侣主脑"
+          },
+          "description": {
+            "en": "Reads one batch of the owner's messages and returns a JSON decision. Opened by the companion engine, not by hand.",
+            "zh-CN": "读一批主人的消息，返回一个 JSON 判断。由伴侣后台服务开启，不手动使用。"
+          },
+          "preset": "companion-judge"
+        }
+      },
+      "worker": {
+        "profile": {
+          "toolPolicy": {
+            "deny": [
+              "skill_helper_create",
+              "skill_helper_import",
+              "skill_helper_install"
+            ]
+          }
+        },
+        "presets": {
+          "companion-worker": {
+            "name": "companion-worker",
+            "extends": "standard",
+            "surfaces": [
+              "daemon",
+              "sdk"
+            ],
+            "approval": {
+              "on_unavailable": "park"
+            },
+            "ext_ui": {
+              "unattended": "decline"
+            }
+          }
+        },
+        "launch": {
+          "title": {
+            "en": "Companion worker",
+            "zh-CN": "伴侣执行"
+          },
+          "description": {
+            "en": "Carries out one coding task for the owner and stops for approvals nobody can answer. Opened by the companion engine, not by hand.",
+            "zh-CN": "为主人完成一个编码任务，无人能答的审批停下来等。由伴侣后台服务开启，不手动使用。"
+          },
+          "preset": "companion-worker"
+        }
+      }
+    },
+    "application": {
+      "id": "companion",
+      "brand": {
+        "name": {
+          "en": "Companion",
+          "zh-CN": "伴侣"
+        },
+        "title": {
+          "en": "Companion task desk",
+          "zh-CN": "伴侣任务台"
+        }
+      },
+      "presentation": {
+        "home": "@agh-apps/companion#desk",
+        "navigation": {
+          "entries": [
+            "@agh-apps/companion#desk",
+            "@agh-apps/companion#settings"
+          ]
+        },
+        "roles": {
+          "navigation": {
+            "packageId": "@agh-apps/companion",
+            "clientId": "companion-ui"
+          }
+        }
+      }
+    }
+  }
+}

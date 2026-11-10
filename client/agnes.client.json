@@ -1,0 +1,24 @@
+{
+  "client": {
+    "id": "companion-ui",
+    "lifetime": "profile",
+    "entry": "./index.js",
+    "slotCatalogVersion": "dsh-client-slots/v1",
+    "slots": ["ui:sidebar", "sidebar"],
+    "presentationRoles": ["navigation"],
+    "services": ["companion.status", "companion.configuration", "companion.configure"],
+    "projections": [],
+    "homeEntries": [
+      {
+        "id": "desk",
+        "placement": "primary",
+        "navigation": { "title": "Tasks", "titles": { "zh-CN": "任务台" }, "icon": "list", "order": 1 }
+      },
+      {
+        "id": "settings",
+        "placement": "primary",
+        "navigation": { "title": "Companion settings", "titles": { "zh-CN": "伴侣设置" }, "icon": "settings", "order": 2 }
+      }
+    ]
+  }
+}
