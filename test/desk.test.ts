@@ -32,6 +32,63 @@ async function ask(h: H, desk: ReturnType<typeof deskOf>, text: string, op: stri
   await h.tick()
 }
 
+const PR = 'https://git.example.test/org/api/pull/12'
+const published = (prUrl = PR) => JSON.stringify({ status: 'published', prUrl, branch: 'companion/x', commit: 'abc', remote: 'https://git.example.test/org/api.git', files: ['a.txt'] })
+
+describe('PR link from the publish tool result', () => {
+  const taskRepo = (task: any) => task.repo ?? undefined
+
+  it('writes prUrl and repo once publish is done, and the desk then links it', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    const call = h.sessions.call(sid, 'publish')
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: null, repo: null })
+    h.restart()
+    h.sessions.resolve(sid, call, published())
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: PR, repo: 'git.example.test/org/api' })
+    const row = (await deskOf(h, { prRepo: taskRepo }).view()).tasks.running[0]
+    expect(row).toMatchObject({ prUrl: PR, prLink: PR })
+    h.restart()
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: PR, repo: 'git.example.test/org/api' })
+  })
+
+  it('writes both when the result is already there the first time the call is seen', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), published())
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: PR, repo: 'git.example.test/org/api' })
+  })
+
+  it.each([
+    ['a refusal', JSON.stringify({ status: 'refused', reason: 'no-human-approval' }), true],
+    ['a result with no output', '', false],
+    ['text that is not JSON', `done: ${PR}`, false],
+    ['a URL that is not a pull request page', published('https://git.example.test/org/api/pull/12/files'), false],
+    ['a URL on a plain http page', published('http://git.example.test/org/api/pull/12'), false],
+  ])('%s writes nothing', async (_name, text, isError) => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessions.call(h.sessionOf(id), 'publish')
+    h.sessions.resolve(h.sessionOf(id), sid, text, isError)
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: null, repo: null })
+  })
+
+  it('reads only the publish tool', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    h.sessions.resolve(h.sessionOf(id), h.sessions.call(h.sessionOf(id), 'shell'), published())
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ prUrl: null, repo: null })
+  })
+})
+
 describe('companion.desk query', () => {
   it('groups tasks as the page shows them and carries what each row needs', async () => {
     const h = harness()

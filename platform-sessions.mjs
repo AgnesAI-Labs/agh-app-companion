@@ -133,6 +133,7 @@ export function platformSessions(platform) {
     events: guarded((sessionId, options) => platform.events(sessionId, options)),
     result: guarded((sessionId) => platform.result(sessionId)),
     usage: guarded((sessionId) => platform.usage(sessionId)),
+    toolResult: guarded((sessionId, callSeq) => platform.toolResult(sessionId, callSeq)),
     interrupt: guarded((sessionId) => platform.interrupt(sessionId)),
     archive: guarded((sessionId) => platform.archive(sessionId)),
   })

@@ -1,4 +1,5 @@
 import { SLOT_STATES } from './machine.mjs'
+import { PUBLISH_TOOL_NAME, publishedPullRequest } from './publish.mjs'
 import { handbackReason } from './signals.mjs'
 import { allTasks, choiceCard, dispose, enqueueMessage, getTask, label, TEXT, transit } from './tasks.mjs'
 import { recentConversation } from './context.mjs'
@@ -28,14 +29,43 @@ export async function reconcile(deps) {
     const ended = events.some((e) => e.kind === 'turn' && e.status === 'completed')
     const reply = ended ? ((await deps.sessions.result(task.sessionId)).text ?? '') : ''
     const usage = reading(await deps.sessions.usage(task.sessionId))
+    const closed = events.some((e) => e.kind === 'turn' && (e.status === 'completed' || e.status === 'failed' || e.status === 'cancelled'))
+    const publishes = await readPublishes(deps.sessions, task, events, closed)
     const tx = deps.tx()
     tx.store.transaction(() => {
-      tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq })
+      tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq, ...publishes })
       waitState(tx, task.id, row.status)
       for (const event of events) apply(tx, task.id, event, reply)
       account(tx, task.id, usage)
     })
   }
+}
+
+/** Calls of the publish tool one task keeps waiting on at a time; older ones are dropped. */
+const MAX_OPEN_PUBLISHES = 8
+
+/**
+ * A tool call is reported once, at its own seq, so the calls of `publish` that have no result yet are
+ * kept on the task and asked for again each pass (`toolResult`, `pending` until the call ends). A done
+ * result that names a pull request gives `prUrl` and `repo` together; any other done result, and a
+ * call left pending when the turn has ended, is dropped. The caller commits these with the cursor.
+ * @param {import('./sessions.mjs').ManagedSessions} sessions @param {import('./tasks.mjs').Task} task
+ * @param {readonly import('./sessions.mjs').SessionEvent[]} events @param {boolean} turnClosed
+ * @returns {{ publishCalls: number[], prUrl?: string, repo?: string }}
+ */
+async function readPublishes(sessions, task, events, turnClosed) {
+  const seen = events.filter((e) => e.kind === 'tool' && e.name === PUBLISH_TOOL_NAME).map((e) => e.seq)
+  const calls = [...new Set([...(task.publishCalls ?? []), ...seen])].sort((a, b) => a - b)
+  /** @type {number[]} */
+  const open = []
+  /** @type {{ prUrl: string, repo: string } | undefined} */
+  let found
+  for (const seq of calls) {
+    const result = await sessions.toolResult(/** @type {string} */ (task.sessionId), seq).catch(() => undefined)
+    if (result?.state === 'done') found = (!result.isError && publishedPullRequest(result.text)) || found
+    else open.push(seq)
+  }
+  return { publishCalls: turnClosed ? [] : open.slice(-MAX_OPEN_PUBLISHES), ...found }
 }
 
 /**

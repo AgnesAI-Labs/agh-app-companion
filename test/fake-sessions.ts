@@ -6,6 +6,7 @@ import type {
   SessionStatus,
   SessionUsage,
   StartRequest,
+  ToolResult,
   TurnEnd,
 } from '../sessions.mjs'
 import { ROLES } from '../sessions.mjs'
@@ -22,6 +23,7 @@ type FakeSession = {
   result: string | null
   keys: Set<string>
   usage: SessionUsage
+  results: Map<number, ToolResult>
   inputs: string[]
 }
 
@@ -106,6 +108,7 @@ export function fakeSessions(
         result: null,
         keys: new Set(),
         usage: { inputTokens: null, outputTokens: null, cost: null },
+        results: new Map(),
         inputs: [],
       }
       sessions.set(sessionId, session)
@@ -150,6 +153,11 @@ export function fakeSessions(
     },
     async usage(sessionId) {
       return { ...get(sessionId).usage }
+    },
+    async toolResult(sessionId, callSeq) {
+      const result = get(sessionId).results.get(callSeq)
+      if (!result) throw rpcRefusal({ reason: 'INVALID_PARAMS' })
+      return { ...result }
     },
     async interrupt(sessionId) {
       const session = get(sessionId)
@@ -214,6 +222,21 @@ export function fakeSessions(
         event.approvalSeq ?? [...session.events].reverse().find((e) => e.kind === 'approval')?.seq ?? 0
       session.status = { kind: 'active', flags: [] }
       push(session, { kind: 'approvalOutcome', approvalSeq, outcome: event.outcome, via: event.via })
+    },
+    /**
+     * A tool call is reported once, at its own seq, whatever state it is in; its result is read with
+     * `toolResult` and is `pending` until `resolve` gives it. Returns the call's seq.
+     */
+    call(sessionId: string, name: string) {
+      const session = get(sessionId)
+      push(session, { kind: 'tool', name, status: 'awaiting_approval' })
+      session.results.set(session.seq, { name, state: 'pending', isError: false, text: '', exitCode: null })
+      return session.seq
+    },
+    resolve(sessionId: string, callSeq: number, text: string, isError = false) {
+      const session = get(sessionId)
+      const name = session.results.get(callSeq)?.name ?? 'unknown'
+      session.results.set(callSeq, { name, state: 'done', isError, text, exitCode: null })
     },
     finish(sessionId: string, outcome: TurnEnd, text?: string) {
       finish(get(sessionId), outcome, text)

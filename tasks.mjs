@@ -17,7 +17,8 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   id: string, title: string, brief: string, briefHash: string, workspace: string,
  *   state: TaskState, reason: StateReason | null, origin: { kind: 'owner', inbox: string[] }, hops: number,
  *   sessionId: string | null, generation: number, cursor: number, resumed: number, refusals: number,
- *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, attach: AttachMark | null,
+ *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, repo: string | null, publishCalls: number[],
+ *   attach: AttachMark | null,
  *   eventSeq: number, createdAt: string, updatedAt: string, endedAt: string | null, eventChunks: number,
  *   compacted: { events: number, firstAt: string | null, lastAt: string | null } | null,
  * }} Task
@@ -177,6 +178,7 @@ export function transit(tx, taskId, event, detail = {}) {
         task.generation += 1
         task.sessionId = null
         task.cursor = 0
+        task.publishCalls = []
         enqueueOp(tx, { taskId, kind: 'start', generation: task.generation, input: workerInput(task) })
       }
       break
@@ -268,7 +270,7 @@ export function createTask(tx, { title, workspace, inbox, brief, hops }) {
     id, title, brief, briefHash: hash(brief), workspace, state: 'queued', reason: null,
     origin: { kind: 'owner', inbox }, hops,
     sessionId: null, generation: 0, cursor: 0, resumed: 0, refusals: 0,
-    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, attach: null, eventSeq: 0,
+    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, repo: null, publishCalls: [], attach: null, eventSeq: 0,
     createdAt: tx.at, updatedAt: tx.at, endedAt: null, compacted: null,
   }
   tx.store.createTask(task)

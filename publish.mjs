@@ -759,6 +759,27 @@ export function isPullOf(url, repo) {
   return url.toLowerCase().startsWith(prefix) && /^[1-9][0-9]*$/.test(url.slice(prefix.length))
 }
 
+/**
+ * The pull request a finished `publish` call opened, read from its result text, or undefined when the
+ * text names none. The repository is the URL's own `host/owner/name`, so the link the desk shows
+ * always belongs to the repository stored beside it. Any other shape reads as no result.
+ * @param {string} text
+ * @returns {{ prUrl: string, repo: string } | undefined}
+ */
+export function publishedPullRequest(text) {
+  /** @type {unknown} */
+  let result
+  try {
+    result = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const { status, prUrl } = /** @type {{ status?: unknown, prUrl?: unknown }} */ (result && typeof result === 'object' ? result : {})
+  if (status !== 'published' || typeof prUrl !== 'string') return undefined
+  const repo = /^https:\/\/([^/\s]+\/[^/\s]+\/[^/\s]+)\/pull\/[^/]+$/.exec(prUrl)?.[1]
+  return repo && isPullOf(prUrl, repo) ? { prUrl, repo } : undefined
+}
+
 /** @param {string} text */
 function tail(text) {
   const clean = withoutCredentials(text).trim()

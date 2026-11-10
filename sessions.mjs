@@ -26,10 +26,13 @@
  *   `afterSeq`. An approval's end comes as an `approvalOutcome` at the seq that ended it, so a reader
  *   paging with `afterSeq` gets each one once; `via: 'person'` is the owner's own answer on an owner
  *   surface and everything unsure is `automatic` (reconcile.mjs counts only person refusals).
+ *   A tool call is reported once too; its result is read with `toolResult(sessionId, callSeq)`.
  * @typedef {{ sessionId: string, startKey: string, bundle: string, workspace: string, retention: Retention, archived: boolean, status: SessionStatus }} SessionRow
  * @typedef {{ turn: { status: TurnEnd, reason?: string } | null, text: string | null }} SessionResult
  * @typedef {{ inputTokens: number | null, outputTokens: number | null, cost: { amount: number, currency: string } | null }} SessionUsage
  *   null = the platform cannot say; never read as 0
+ * @typedef {{ name: string, state: 'pending' | 'done', isError: boolean, text: string, exitCode: number | null }} ToolResult
+ *   while `pending` the call has no result yet and isError, text and exitCode say nothing
  * @typedef {{
  *   start(request: StartRequest): Promise<{ sessionId: string, created: boolean }>,
  *   send(sessionId: string, input: { text: string, idempotencyKey: string }): Promise<SendResult>,
@@ -37,6 +40,7 @@
  *   events(sessionId: string, options?: { afterSeq?: number }): Promise<{ events: readonly SessionEvent[], lastSeq: number }>,
  *   result(sessionId: string): Promise<SessionResult>,
  *   usage(sessionId: string): Promise<SessionUsage>,
+ *   toolResult(sessionId: string, callSeq: number): Promise<ToolResult>,
  *   interrupt(sessionId: string): Promise<void>,
  *   archive(sessionId: string): Promise<void>,
  * }} ManagedSessions  every method may reject with a SessionRefusal (platform-sessions.mjs)
