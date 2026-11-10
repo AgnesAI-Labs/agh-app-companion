@@ -17,12 +17,22 @@
     "settings.mjs",
     "store.mjs",
     "sessions.mjs",
+    "limits.mjs",
+    "machine.mjs",
+    "signals.mjs",
+    "tasks.mjs",
+    "context.mjs",
+    "judge.mjs",
+    "effects.mjs",
+    "reconcile.mjs",
+    "housekeeping.mjs",
+    "engine.mjs",
     "client",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check client/index.js",
+    "build": "node --check index.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check engine.mjs && node --check client/index.js",
     "test": "sh scripts/companion-test.sh"
   },
   "agnes": {

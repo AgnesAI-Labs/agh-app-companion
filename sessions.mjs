@@ -13,8 +13,11 @@
  *   workspace: string, input: string, startKey: string, model?: string,
  * }} StartRequest  model absent = deployment default; a named route the deployment lacks is refused, never replaced
  * @typedef {{ kind: 'started' } | { kind: 'notSubmitted', reason: 'busy' | 'archived' | 'duplicateKey' }} SendResult
+ * @typedef {'completed' | 'failed' | 'interrupted'} TurnOutcome
  * @typedef {{ kind: 'status', status: SessionStatus } | { kind: 'text', text: string } | { kind: 'error', message: string }
- *   | { kind: 'approval', state: 'pending' | 'answered' }} SessionEvent
+ *   | { kind: 'approval', state: 'pending' } | { kind: 'approval', state: 'answered', decision: 'approved' | 'refused' }
+ *   | { kind: 'approval', state: 'expired' } | { kind: 'turn', outcome: TurnOutcome }} SessionEvent
+ *   A turn's end is reported once as `turn`; `result` then holds that turn's final reply.
  * @typedef {{ sessionId: string, startKey: string, role: Role, status: SessionStatus, archived: boolean }} SessionRow
  * @typedef {{ tokens: number | null, cost: number | null }} Usage  null = the platform cannot say; never read as 0
  * @typedef {{

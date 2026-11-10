@@ -2,14 +2,23 @@
  * The companion's data in its Host-owned OwnedStore namespace. Every key is listed here:
  *
  *   meta                          StoreMeta      written once, read on every start
+ *   counter                       Counters       next task number and next op number
  *   task/<taskId>                 TaskRecord
  *   events/<taskId>/<chunk>       EventChunk     <chunk> is a zero-padded index, so a prefix scan is in order
+ *   inbox/<source>:<eventId>      InboxEntry     deleted 7 days after it has a disposition
+ *   outbox/<deliveryKey>          OutboxEntry    deleted 7 days after delivery
+ *   op/<seq>                      SessionOp      a committed session operation, deleted once executed
+ *   judge/batch                   JudgeBatch     the batch being judged; the commit that disposes it deletes it
+ *   judge/backoff                 JudgeBackoff   set while the judge model is treated as unavailable
+ *   usage/<yyyy-mm-dd>            DayUsage       session usage summed per day
+ *   alerts                        Alerts         which store-size notice has been sent
  *
- * Session status is computed from the platform's run facts and never stored here.
+ * Session status is computed from the platform's run facts and never stored here. Shapes of the
+ * engine's records are defined next to the code that owns them (tasks.mjs, signals.mjs, effects.mjs).
  *
  * @typedef {import('@agnes/protocol').JsonValue} JsonValue
  * @typedef {{ format: number }} StoreMeta
- * @typedef {{ id: string, workspace: string, createdAt: string, eventChunks: number }} TaskRecord
+ * @typedef {{ id: string, workspace: string, createdAt: string, eventChunks: number, [field: string]: any }} TaskRecord
  * @typedef {{ at: string, kind: string, data: JsonValue }} TaskEvent
  * @typedef {{ taskId: string, index: number, events: TaskEvent[] }} EventChunk
  * @typedef {import('@agnes/extension-api').OwnedStore} OwnedStore
@@ -18,6 +27,8 @@
 export const STORE_FORMAT = 1
 // The Host caps one value at 64 KiB; the margin leaves room for the chunk's own fields.
 export const EVENT_CHUNK_MAX_BYTES = 48 * 1024
+export const STORE_MAX_KEYS = 10000
+export const STORE_MAX_BYTES = 16 * 1024 * 1024
 const CHUNK_DIGITS = 6
 const SCAN_PAGE = 256
 
@@ -62,13 +73,42 @@ export function openStore(owned) {
   /** @param {string} taskId @returns {TaskRecord | undefined} */
   const getTask = (taskId) => owned.get(`task/${taskId}`)
 
+  /** @param {string} prefix @returns {{ key: string, value: any }[]} */
+  const scan = (prefix) => {
+    const rows = []
+    let cursor
+    do {
+      const page = owned.scan({ prefix, limit: SCAN_PAGE, ...(cursor ? { cursor } : {}) })
+      rows.push(...page.rows)
+      cursor = page.nextCursor
+    } while (cursor)
+    return rows
+  }
+
   return Object.freeze({
     getTask,
-    /** @param {{ id: string, workspace: string, createdAt: string }} task */
+    /** @param {string} key */
+    get: (key) => owned.get(key),
+    /** @param {string} key @param {JsonValue} value */
+    set: (key, value) => owned.set(key, value),
+    /** @param {string} key */
+    delete: (key) => owned.delete(key),
+    scan,
+    /** Synchronous and atomic; the Host refuses a callback that returns a promise. @template T @param {() => T} work */
+    transaction: (work) => owned.transaction(work),
+    /** @param {{ id: string, workspace: string, createdAt: string, [field: string]: any }} task */
     createTask(task) {
       owned.transaction(() => {
         if (getTask(task.id)) throw new Error(`task ${task.id} exists`)
         owned.set(`task/${task.id}`, { ...task, eventChunks: 0 })
+      })
+    },
+    /** Writes a task record that already exists, keeping its chunk count. @param {TaskRecord} task */
+    putTask(task) {
+      owned.transaction(() => {
+        const current = getTask(task.id)
+        if (!current) throw new Error(`unknown task ${task.id}`)
+        owned.set(`task/${task.id}`, { ...task, eventChunks: current.eventChunks })
       })
     },
     /** @param {string} taskId @param {TaskEvent} event */
@@ -92,14 +132,23 @@ export function openStore(owned) {
     },
     /** @param {string} taskId @returns {TaskEvent[]} */
     readEvents(taskId) {
-      const events = []
-      let cursor
-      do {
-        const page = owned.scan({ prefix: `events/${taskId}/`, limit: SCAN_PAGE, ...(cursor ? { cursor } : {}) })
-        for (const row of page.rows) events.push(...row.value.events)
-        cursor = page.nextCursor
-      } while (cursor)
-      return events
+      return scan(`events/${taskId}/`).flatMap((row) => row.value.events)
+    },
+    /** Deletes a task's event chunks, for compaction into its summary. @param {string} taskId */
+    dropEvents(taskId) {
+      owned.transaction(() => {
+        for (const row of scan(`events/${taskId}/`)) owned.delete(row.key)
+        const task = getTask(taskId)
+        if (task) owned.set(`task/${taskId}`, { ...task, eventChunks: 0 })
+      })
+    },
+    /** Key count and serialized bytes against the Host caps (10k keys, 16 MiB). */
+    usage() {
+      const rows = scan('')
+      const total = rows.reduce((sum, row) => sum + bytes(row.value), 0)
+      return { keys: rows.length, bytes: total, ratio: Math.max(rows.length / STORE_MAX_KEYS, total / STORE_MAX_BYTES) }
     },
   })
 }
+
+/** @typedef {ReturnType<typeof openStore>} Store */
