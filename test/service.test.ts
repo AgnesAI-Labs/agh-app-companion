@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS } from '../settings.mjs'
 import { fakeGateway, OWNER } from './fake-gateway.js'
 import { fakeSessions } from './fake-sessions.js'
 import { decisions, readJudgeInput, SETTINGS } from './harness.js'
-import { memoryOwnedStore } from './owned-store.js'
+import { HOST_ROWS, memoryOwnedStore } from './owned-store.js'
 
 type Shutdown = (reason: 'disable' | 'upgrade' | 'exit') => Promise<{ state: 'settled' | 'unknown' }>
 
@@ -106,6 +106,26 @@ describe('companion service', () => {
     expect(gateway.shown.every((m) => m.chatId === OWNER.chatId)).toBe(true)
     expect(s.store.get('meta')).toMatchObject({ channelOwner: { instanceId: 'im-1', userId: OWNER.userId } })
     await s.shutdown()
+  })
+
+  it('starts on the namespace the Host prepared and leaves its rows alone', async () => {
+    const s = service({ sessions: scripted().port, gateway: fakeGateway() })
+    const svc = await s.started
+    expect(s.init.ready).toHaveBeenCalledOnce()
+    expect(svc.status()).toEqual({ running: true, problems: [] })
+    for (const [key, value] of HOST_ROWS) expect(s.store.rows.get(key)).toEqual(value)
+    await s.shutdown()
+  })
+
+  it('registers its shutdown handler before a refused store throws, and that handler settles', async () => {
+    const owned = memoryOwnedStore()
+    owned.set('task/t1', { id: 't1' })
+    const s = service({ store: owned })
+    await expect(s.started).rejects.toThrow(/unreadable/)
+    expect(s.init.onShutdown).toHaveBeenCalledOnce()
+    expect(s.init.ready).not.toHaveBeenCalled()
+    expect(owned.get('meta')).toBeUndefined()
+    await expect(s.shutdown()).resolves.toEqual({ state: 'settled' })
   })
 
   it('becomes ready without init.sessions and says which platform capability is missing', async () => {

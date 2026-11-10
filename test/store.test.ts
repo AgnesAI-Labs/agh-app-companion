@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EVENT_CHUNK_MAX_BYTES, openStore, STORE_FORMAT, StoreFormatError } from '../store.mjs'
-import { memoryOwnedStore } from './owned-store.js'
+import { HOST_ROWS, memoryOwnedStore } from './owned-store.js'
 
 const event = (n: number, pad = 0) => ({ at: '2026-11-10T00:00:00Z', kind: 'note', data: { n, text: 'x'.repeat(pad) } })
 
@@ -37,6 +37,43 @@ describe('companion store', () => {
     owned.set('task/t1', { id: 't1' })
     expect(() => openStore(owned)).toThrow(/unreadable/)
     expect(owned.get('meta')).toBeUndefined()
+  })
+
+  it('adopts a namespace that holds only the Host rows and never touches them', () => {
+    const owned = memoryOwnedStore()
+    expect([...owned.rows.keys()]).toEqual(HOST_ROWS.map(([key]) => key))
+    const store = openStore(owned)
+    expect(owned.get('meta')).toEqual({ format: STORE_FORMAT })
+    store.createTask({ id: 't1', workspace: 'api', createdAt: '2026-11-10T00:00:00Z' })
+    store.dropEvents('t1')
+    for (const [key, value] of HOST_ROWS) expect(owned.rows.get(key)).toEqual(value)
+    expect(() => store.set('managed-shutdown:companion', false)).toThrow(/belongs to the Host/)
+    expect(() => store.delete('managed-binding:companion')).toThrow(/belongs to the Host/)
+  })
+
+  it('still refuses companion data without a stamp or with a newer one when the Host rows are present', () => {
+    const unstamped = memoryOwnedStore()
+    unstamped.set('task/t1', { id: 't1' })
+    expect(() => openStore(unstamped)).toThrow(/unreadable/)
+    expect(unstamped.get('meta')).toBeUndefined()
+    const newer = memoryOwnedStore()
+    newer.set('meta', { format: STORE_FORMAT + 1 })
+    expect(() => openStore(newer)).toThrow(/newer/)
+  })
+
+  it('finds a foreign row beyond the first scan page', () => {
+    const owned = memoryOwnedStore({ host: false })
+    for (let n = 0; n < 300; n++) owned.set(`managed-x:${String(n).padStart(3, '0')}`, n)
+    expect(() => openStore(owned)).not.toThrow()
+    const mixed = memoryOwnedStore({ host: false })
+    for (let n = 0; n < 300; n++) mixed.set(`managed-x:${String(n).padStart(3, '0')}`, n)
+    mixed.set('zzz', 1)
+    expect(() => openStore(mixed)).toThrow(/unreadable/)
+  })
+
+  it('counts the Host rows in usage because the caps cover the whole namespace', () => {
+    const store = openStore(memoryOwnedStore())
+    expect(store.usage().keys).toBe(HOST_ROWS.length + 1)
   })
 
   it('splits a long event history into chunks that each fit the store value cap, in order', () => {

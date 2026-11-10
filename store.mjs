@@ -14,6 +14,12 @@
  *   alerts                        Alerts         which store-size notice has been sent
  *   refusal/<role>:<scope>        RefusalRecord  a platform refusal the owner was told about, until a task under it is continued
  *
+ * The Host writes its own rows into this same namespace before it calls `start` (managed-shutdown:<id>,
+ * managed-process:<id>, managed-incarnation:<id>, managed-binding:<id>, managed-predecessor:<id>,
+ * managed-marker-revision:<id>, managed-config:<id>). They all start with `managed-`, no key above does,
+ * and this module never writes, deletes or reads one: they are the Host's, not companion data. The
+ * platform documents no reserved prefix, so `managed-` is what the Host writes today, not a promise.
+ *
  * Session status is computed from the platform's run facts and never stored here. Shapes of the
  * engine's records are defined next to the code that owns them (tasks.mjs, signals.mjs, effects.mjs).
  *
@@ -33,6 +39,8 @@ export const STORE_MAX_KEYS = 10000
 export const STORE_MAX_BYTES = 16 * 1024 * 1024
 const CHUNK_DIGITS = 6
 const SCAN_PAGE = 256
+const HOST_PREFIX = 'managed-'
+const isHostKey = (key) => key.startsWith(HOST_PREFIX)
 
 export class StoreFormatError extends Error {
   /** @param {'newer' | 'unreadable'} reason @param {unknown} found */
@@ -50,11 +58,22 @@ export class StoreFormatError extends Error {
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 const chunkKey = (taskId, index) => `events/${taskId}/${String(index).padStart(CHUNK_DIGITS, '0')}`
 
+/** True when the namespace holds a row that is neither the Host's nor ours to adopt. @param {OwnedStore} owned */
+function holdsForeignRows(owned) {
+  let cursor
+  do {
+    const page = owned.scan({ prefix: '', limit: SCAN_PAGE, ...(cursor ? { cursor } : {}) })
+    if (page.rows.some((row) => !isHostKey(row.key))) return true
+    cursor = page.nextCursor
+  } while (cursor)
+  return false
+}
+
 /** @param {OwnedStore} owned */
 function checkFormat(owned) {
   const meta = owned.get('meta')
   if (meta === undefined) {
-    if (owned.scan({ prefix: '', limit: 1 }).rows.length) throw new StoreFormatError('unreadable', undefined)
+    if (holdsForeignRows(owned)) throw new StoreFormatError('unreadable', undefined)
     owned.set('meta', { format: STORE_FORMAT })
     return
   }
@@ -62,6 +81,12 @@ function checkFormat(owned) {
   if (format === STORE_FORMAT) return
   if (Number.isSafeInteger(format) && format > STORE_FORMAT) throw new StoreFormatError('newer', format)
   throw new StoreFormatError('unreadable', format)
+}
+
+/** @param {string} key */
+function hostSafe(key) {
+  if (isHostKey(key)) throw new Error(`${key} belongs to the Host`)
+  return key
 }
 
 /**
@@ -92,9 +117,9 @@ export function openStore(owned) {
     /** @param {string} key */
     get: (key) => owned.get(key),
     /** @param {string} key @param {JsonValue} value */
-    set: (key, value) => owned.set(key, value),
+    set: (key, value) => owned.set(hostSafe(key), value),
     /** @param {string} key */
-    delete: (key) => owned.delete(key),
+    delete: (key) => owned.delete(hostSafe(key)),
     scan,
     /** Synchronous and atomic; the Host refuses a callback that returns a promise. @template T @param {() => T} work */
     transaction: (work) => owned.transaction(work),
@@ -150,7 +175,7 @@ export function openStore(owned) {
     recordChannelOwner(channelOwner) {
       owned.transaction(() => owned.set('meta', { ...owned.get('meta'), channelOwner }))
     },
-    /** Key count and serialized bytes against the Host caps (10k keys, 16 MiB). */
+    /** Key count and serialized bytes against the Host caps (10k keys, 16 MiB). The caps cover the whole namespace, so the Host's own rows count here on purpose. */
     usage() {
       const rows = scan('')
       const total = rows.reduce((sum, row) => sum + bytes(row.value), 0)

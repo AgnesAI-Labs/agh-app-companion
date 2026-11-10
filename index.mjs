@@ -49,9 +49,9 @@ const NO_CHANNEL = Object.freeze({
 
 /**
  * Starts the task engine resource. Settings that break the rules, or a store this build cannot
- * read, stop it before ready. Anything else that keeps the engine from working (a missing platform
- * capability, unfinished settings, no channel, a store bound to another owner) still becomes ready
- * and is reported by `status()`.
+ * read, stop it before ready; the Host then shows only that start failed, not why. Anything else
+ * that keeps the engine from working (a missing platform capability, unfinished settings, no
+ * channel, a store bound to another owner) still becomes ready and is reported by `status()`.
  * @param {import('@agnes/extension-api').ProfileManagedInit} init
  * @param {ServiceDeps} [deps]
  */
@@ -59,6 +59,37 @@ export async function startEngine(
   init,
   { resolveGateway = resolveChannelGateway, now, limits = LIMITS, prRepo = taskRepo } = {},
 ) {
+  // Registered first: once the Host has called start it counts the resource as live, and a start that
+  // throws before a shutdown handler exists is reported as an unconfirmed shutdown that no retry clears.
+  /** @type {Promise<void> | null} */
+  let inflight = null
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let timer = null
+  let stopped = false
+  const stop = () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+    timer = null
+  }
+  init.signal.addEventListener('abort', stop, { once: true })
+
+  init.onShutdown(async () => {
+    stop()
+    init.signal.removeEventListener('abort', stop)
+    const pending = inflight
+    if (!pending) return { state: 'settled' }
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let deadline
+    const settled = await Promise.race([
+      pending.then(() => true),
+      new Promise((resolve) => {
+        deadline = setTimeout(() => resolve(false), limits.shutdownSettleMs)
+      }),
+    ])
+    clearTimeout(deadline)
+    return { state: settled ? 'settled' : 'unknown' }
+  })
+
   const store = openStore(init.store)
   const parsed = parseSettings(/** @type {never} */ (init.config))
   if (!parsed.ok) throw new Error(`companion settings are invalid: ${parsed.errors.join('; ')}`)
@@ -68,11 +99,6 @@ export async function startEngine(
   const blockers = []
   /** @type {unknown} the last pass's failure, null after a pass that worked */
   let engineError = null
-  /** @type {Promise<void> | null} */
-  let inflight = null
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let timer = null
-  let stopped = false
   /** @type {ReturnType<typeof createEngine> | null} */
   let engine = null
   /** @type {import('./channel.mjs').ChatChannel | null} */
@@ -158,30 +184,6 @@ export async function startEngine(
     await run(() => current.tick())
     if (!stopped) timer = setTimeout(loop, limits.tickIntervalMs)
   }
-  const stop = () => {
-    stopped = true
-    if (timer) clearTimeout(timer)
-    timer = null
-  }
-  init.signal.addEventListener('abort', stop, { once: true })
-
-  init.onShutdown(async () => {
-    stop()
-    init.signal.removeEventListener('abort', stop)
-    const pending = inflight
-    if (!pending) return { state: 'settled' }
-    /** @type {ReturnType<typeof setTimeout> | undefined} */
-    let deadline
-    const settled = await Promise.race([
-      pending.then(() => true),
-      new Promise((resolve) => {
-        deadline = setTimeout(() => resolve(false), limits.shutdownSettleMs)
-      }),
-    ])
-    clearTimeout(deadline)
-    return { state: settled ? 'settled' : 'unknown' }
-  })
-
   /** @returns {ServiceStatus} */
   const status = () => {
     /** @type {Problem[]} */
