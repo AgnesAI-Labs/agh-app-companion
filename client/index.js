@@ -2,6 +2,7 @@ import { homeNavigation } from '@agnes/web-client'
 import { bindNavigationHistory, mountSidebarRegion } from '@agnes/web/presentation-renderers'
 import React from 'react'
 import { Desk } from './desk.js'
+import { createSaver } from './settings-save.js'
 
 const h = React.createElement
 const ENGINE = 'companion'
@@ -33,6 +34,10 @@ function field(label, input) {
 function Settings({ services }) {
   const [draft, setDraft] = React.useState(undefined)
   const [note, setNote] = React.useState('')
+  const saver = React.useMemo(
+    () => createSaver((input, options) => services.effect(`${ENGINE}.configure`, input, options)),
+    [services],
+  )
   React.useEffect(() => {
     let live = true
     services
@@ -49,7 +54,7 @@ function Settings({ services }) {
   const save = async () => {
     setNote('保存中…')
     try {
-      const receipt = await services.effect(`${ENGINE}.configure`, draft, { operationId: crypto.randomUUID() })
+      const receipt = await saver(draft)
       setNote(
         receipt?.state === 'approval-required' ? '需要你在「审批」里批准这次修改，批准后再点一次保存。' : `已提交：${receipt?.state}`,
       )
