@@ -754,7 +754,7 @@ function parseRemote(url) {
  * @param {string} url
  * @param {string} repo
  */
-function isPullOf(url, repo) {
+export function isPullOf(url, repo) {
   const prefix = `https://${repo}/pull/`.toLowerCase()
   return url.toLowerCase().startsWith(prefix) && /^[1-9][0-9]*$/.test(url.slice(prefix.length))
 }

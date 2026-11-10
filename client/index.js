@@ -1,21 +1,19 @@
+import { homeNavigation } from '@agnes/web-client'
 import { bindNavigationHistory, mountSidebarRegion } from '@agnes/web/presentation-renderers'
 import React from 'react'
+import { Desk } from './desk.js'
 
 const h = React.createElement
 const ENGINE = 'companion'
+export const LOCALE_NAMESPACE = '@agh-apps/companion'
+export const LOCALE = {
+  en: { 'companion.nav.desk': 'Tasks', 'companion.nav.settings': 'Companion settings' },
+  'zh-CN': { 'companion.nav.desk': '任务台', 'companion.nav.settings': '伴侣设置' },
+}
 const MODEL_ROLES = [
   ['judge', '主脑判断'],
   ['worker', '任务执行'],
 ]
-
-function Desk() {
-  return h(
-    'section',
-    { style: { padding: 24 } },
-    h('h1', null, '任务台'),
-    h('p', null, '任务引擎还没有接上。设置好「伴侣设置」后，这里会列出派给伴侣的任务。'),
-  )
-}
 
 const workspacesText = (list) => list.map((w) => `${w.shortName}=${w.path}`).join('\n')
 const workspacesFrom = (text) =>
@@ -107,16 +105,25 @@ function Settings({ services }) {
 
 export function apply(ctx) {
   const services = ctx.profile.services
+  ctx.locale.register(LOCALE_NAMESPACE, LOCALE)
   const disposers = [
-    ctx.homeEntries.register({ id: 'desk', placement: 'primary', icon: 'list', order: 1, component: Desk }),
+    ctx.homeEntries.register({
+      id: 'desk',
+      placement: 'primary',
+      icon: 'list',
+      titleKey: 'companion.nav.desk',
+      order: 1,
+      component: () => h(Desk, { services, openSettings: () => homeNavigation.open('settings') }),
+    }),
     ctx.homeEntries.register({
       id: 'settings',
       placement: 'primary',
       icon: 'settings',
+      titleKey: 'companion.nav.settings',
       order: 2,
       component: () => h(Settings, { services }),
     }),
-    // Placeholder: keeps the official sidebar until task navigation has task data to show.
+    // Keeps the official sidebar; the design's task list in the sidebar is not built yet.
     ctx.presentationRoles.register({
       role: 'navigation',
       priority: 100,

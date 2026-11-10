@@ -28,6 +28,7 @@
     "effects.mjs",
     "reconcile.mjs",
     "housekeeping.mjs",
+    "desk.mjs",
     "engine.mjs",
     "channel-contract.mjs",
     "channel.mjs",
@@ -36,7 +37,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel.mjs && node --check client/index.js",
+    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check desk.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel.mjs && node --check client/index.js && node --check client/desk.js && node --check client/desk-text.js",
     "test": "sh scripts/companion-test.sh"
   },
   "agnes": {
@@ -266,6 +267,91 @@
                 "isOpenWorld": true,
                 "replay": "never",
                 "requiresApproval": "always",
+                "approvalScopes": []
+              }
+            },
+            {
+              "name": "companion.desk",
+              "scope": "profile",
+              "kind": "query",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object"
+              },
+              "timeoutMs": 30000,
+              "maxResultBytes": 1048576
+            },
+            {
+              "name": "companion.submit",
+              "scope": "profile",
+              "kind": "effect",
+              "inputSchema": {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "message",
+                      "choice",
+                      "button"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "replyTo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "card": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "pick": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "action": {
+                    "enum": [
+                      "continue",
+                      "stop"
+                    ]
+                  },
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object"
+              },
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "effectPolicy": {
+                "isDestructive": false,
+                "isOpenWorld": false,
+                "replay": "idempotent",
+                "requiresApproval": "never",
                 "approvalScopes": []
               }
             }

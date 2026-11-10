@@ -13,6 +13,7 @@ import {
   preflightPackageBundles,
   writeLock,
 } from '../../../../packages/package-manager/src/index.js'
+import { DESK_CAPABILITIES } from '../desk.mjs'
 import { ENGINE_ID } from '../index.mjs'
 import { SETTINGS_SCHEMA } from '../settings.mjs'
 
@@ -107,14 +108,25 @@ describe('package declaration', () => {
     ])
   })
 
-  it('declares exactly the Host facade services for the managed engine, with the settings schema', () => {
+  it('declares the Host facade services for the managed engine, with the settings schema, and the task desk\'s two', () => {
     expect(row.capabilities.store).toBe(true)
     expect(row.capabilities.managedServices).toEqual([
       expect.objectContaining({ id: ENGINE_ID, scope: 'profile', artifact: { kind: 'in-process' } }),
     ])
     expect(row.capabilities.services).toEqual(
-      JSON.parse(JSON.stringify(managedServiceCapabilities(ENGINE_ID, SETTINGS_SCHEMA))),
+      JSON.parse(
+        JSON.stringify([
+          ...managedServiceCapabilities(ENGINE_ID, SETTINGS_SCHEMA),
+          DESK_CAPABILITIES.query,
+          DESK_CAPABILITIES.submit,
+        ]),
+      ),
     )
+    const clientServices = JSON.parse(readFileSync(new URL('../client/agnes.client.json', import.meta.url), 'utf8')).client.services
+    expect(clientServices).toEqual(
+      expect.arrayContaining(['companion.desk', 'companion.submit', 'companion.status', 'companion.configuration', 'companion.configure']),
+    )
+    for (const name of clientServices) expect(row.capabilities.services.map((s: { name: string }) => s.name)).toContain(name)
   })
 })
 

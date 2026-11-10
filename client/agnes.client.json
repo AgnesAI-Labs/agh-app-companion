@@ -6,7 +6,8 @@
     "slotCatalogVersion": "dsh-client-slots/v1",
     "slots": ["ui:sidebar", "sidebar"],
     "presentationRoles": ["navigation"],
-    "services": ["companion.status", "companion.configuration", "companion.configure"],
+    "styles": ["./desk.css"],
+    "services": ["companion.status", "companion.configuration", "companion.configure", "companion.desk", "companion.submit"],
     "projections": [],
     "homeEntries": [
       {

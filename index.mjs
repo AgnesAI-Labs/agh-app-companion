@@ -1,4 +1,5 @@
 import { openChannel } from './channel.mjs'
+import { buildDesk, deskServices, submitDesk } from './desk.mjs'
 import { createEngine } from './engine.mjs'
 import { LIMITS } from './limits.mjs'
 import { platformSessions, SessionRefusal } from './platform-sessions.mjs'
@@ -7,6 +8,9 @@ import { DEFAULT_SETTINGS, missingSettings, parseSettings, SETTINGS_SCHEMA } fro
 import { openStore } from './store.mjs'
 
 export const ENGINE_ID = 'companion'
+
+/** @param {import('./tasks.mjs').Task} task */
+const taskRepo = (task) => (typeof (/** @type {any} */ (task).repo) === 'string' ? /** @type {any} */ (task).repo : undefined)
 
 /**
  * @typedef {{ kind: 'capability', missing: 'managedSessions', text: string }
@@ -21,7 +25,10 @@ export const ENGINE_ID = 'companion'
  * @typedef {{
  *   resolveGateway?: (init: import('@agnes/extension-api').ProfileManagedInit) => import('./channel-contract.mjs').ChannelGateway | undefined,
  *   now?: () => string, limits?: import('./limits.mjs').Limits,
+ *   prRepo?: (task: import('./tasks.mjs').Task) => string | undefined,
  * }} ServiceDeps
+ *   prRepo = the repository a task's pull request must belong to for the desk to link it; the task's own
+ *   `repo` field by default, which nothing writes yet, so no PR is a link today
  */
 
 /**
@@ -50,7 +57,7 @@ const NO_CHANNEL = Object.freeze({
  */
 export async function startEngine(
   init,
-  { resolveGateway = resolveChannelGateway, now, limits = LIMITS } = {},
+  { resolveGateway = resolveChannelGateway, now, limits = LIMITS, prRepo = taskRepo } = {},
 ) {
   const store = openStore(init.store)
   const parsed = parseSettings(/** @type {never} */ (init.config))
@@ -220,10 +227,35 @@ export async function startEngine(
     void run(() => started.reconcile()).then(loop)
   }
 
+  const clock = now ?? (() => new Date().toISOString())
   return Object.freeze({
     store,
     settings,
     status,
+    /**
+     * The task desk's read (desk.mjs): the engine's tasks, cards, usage and problems in one answer.
+     * @param {{ taskId?: string }} [input]
+     */
+    desk: (input) =>
+      buildDesk(
+        {
+          engine: stopped ? null : engine,
+          store,
+          limits,
+          now: clock,
+          status: status(),
+          sessions,
+          prRepo,
+          workspaces: settings.workspaces.map((w) => w.shortName),
+        },
+        input,
+      ),
+    /**
+     * The owner's input from the task desk, as an inbox signal with source `desk`. It enters the
+     * engine's own `receive`, not the channel's: the desk works with no chat channel.
+     * @param {Record<string, unknown>} input @param {string} operationId
+     */
+    submit: (input, operationId) => submitDesk({ engine: stopped ? null : engine, store, now: clock }, input, operationId),
     /**
      * The gateway's entry for one channel event (A13). Without a running engine and channel the
      * event is dropped with the reason, so the gateway does not redeliver it forever.
@@ -241,12 +273,13 @@ export const main = {
   inject: ['services', 'profileRuntime', 'tools'],
   /** @param {Pick<import('@agnes/extension-api').PluginContextFacets, 'services' | 'profileRuntime' | 'tools'>} ctx */
   apply(ctx) {
-    ctx.profileRuntime.register({
+    const handle = ctx.profileRuntime.register({
       id: ENGINE_ID,
       configSchema: SETTINGS_SCHEMA,
       defaultConfig: DEFAULT_SETTINGS,
       start: startEngine,
     })
+    for (const service of deskServices(() => handle.get())) ctx.services.register(service)
     ctx.tools.register(publishPlanTool())
     ctx.tools.register(publishTool())
   },

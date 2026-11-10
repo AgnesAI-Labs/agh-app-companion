@@ -16,12 +16,17 @@ const init = (store = memoryOwnedStore(), config: unknown = DEFAULT_SETTINGS) =>
 })
 
 describe('managed engine', () => {
-  it('registers one resource whose configuration is the settings schema', () => {
+  it('registers one resource whose configuration is the settings schema, and the task desk\'s two services', () => {
     const register = vi.fn()
-    main.apply({ profileRuntime: { register }, tools: { register: vi.fn() } } as never)
+    const services = vi.fn()
+    main.apply({ profileRuntime: { register }, tools: { register: vi.fn() }, services: { register: services } } as never)
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({ id: ENGINE_ID, configSchema: SETTINGS_SCHEMA, defaultConfig: DEFAULT_SETTINGS }),
     )
+    expect(services.mock.calls.map(([service]) => [service.name, service.kind, service.scope])).toEqual([
+      ['companion.desk', 'query', 'profile'],
+      ['companion.submit', 'effect', 'profile'],
+    ])
   })
 
   it('becomes ready on a fresh store with the unconfigured defaults', async () => {

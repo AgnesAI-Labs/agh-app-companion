@@ -316,4 +316,34 @@ describe('companion service', () => {
     await vi.advanceTimersByTimeAsync(LIMITS.tickIntervalMs)
     expect(vi.getTimerCount()).toBe(0)
   })
+  it('takes the desk\'s message with no chat channel, creates the task, and keeps the reply for the chat', async () => {
+    const sessions = scripted()
+    const s = service({ sessions: sessions.port, gateway: null })
+    const svc = await s.started
+    expect(await svc.desk()).toMatchObject({ running: true, canSubmit: true, submitBlock: null, problems: [{ kind: 'channel' }] })
+    expect(svc.submit({ kind: 'message', text: '登录页报错了，修一下' }, 'op-1')).toEqual({ ok: true, result: 'accepted' })
+    await tick()
+    await tick()
+    const view: any = await svc.desk()
+    expect(view.tasks.recent).toMatchObject([{ id: 'T-0001', state: 'done', workspace: 'api' }])
+    expect(view.messages).toMatchObject([{ state: 'created', taskIds: ['T-0001'], replies: [{ text: '已新建 T-0001（api）修登录报错：进行中', sent: false }] }])
+    expect(s.store.get('inbox/desk:op-1')).toMatchObject({ signal: { source: 'desk', origin: 'owner' } })
+    await s.shutdown()
+  })
+
+  it('answers the desk with the problems and no tasks when settings are unfinished, and refuses its input', async () => {
+    const s = service({ sessions: scripted().port, gateway: fakeGateway(), config: DEFAULT_SETTINGS })
+    const svc = await s.started
+    expect(await svc.desk()).toMatchObject({ running: false, canSubmit: false, problems: [{ kind: 'settings' }], tasks: { running: [], needsYou: [] } })
+    expect(svc.submit({ kind: 'message', text: '在吗' }, 'op-1')).toMatchObject({ ok: false, code: 'not-running' })
+    expect([...s.store.rows.keys()].filter((key) => key.startsWith('inbox/'))).toEqual([])
+    await s.shutdown()
+  })
+
+  it('stops taking desk input once shut down', async () => {
+    const s = service({ sessions: scripted().port, gateway: null })
+    const svc = await s.started
+    await s.shutdown()
+    expect(svc.submit({ kind: 'message', text: '在吗' }, 'op-1')).toMatchObject({ ok: false, code: 'not-running' })
+  })
 })

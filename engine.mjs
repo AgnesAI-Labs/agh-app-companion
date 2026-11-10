@@ -44,7 +44,13 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     exists: (id) => store.getTask(id) !== undefined,
     byPrUrl: (body) => allTasks(tx()).find((t) => t.prUrl && body.includes(t.prUrl))?.id,
   }
-  const pending = () => store.scan('inbox/').map((row) => row.value).filter((e) => e.disposition === null)
+  // Oldest first, so whoever answered a card first wins whatever the sources' key order is.
+  const pending = () =>
+    store
+      .scan('inbox/')
+      .map((row) => row.value)
+      .filter((e) => e.disposition === null)
+      .sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : a.receivedAt > b.receivedAt ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
 
   /** Records a signal once; the channel acknowledges it only after this returns accepted. @param {unknown} raw */
   function receive(raw) {
