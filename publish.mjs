@@ -721,12 +721,16 @@ const NETWORK_MS = 120_000
 const MAX_OUTPUT = 1 << 20
 
 /**
- * The one rule for credentials: the userinfo of every http(s) URL in `text` is dropped, whether a
- * token sits in the user name or the password. ssh user names (`git@`) are not secrets and stay.
+ * The one rule for credentials in URLs. http(s): the whole userinfo is dropped, whether a token sits
+ * in the user name or the password. Every other `scheme://`: only the password is dropped, so
+ * `ssh://git@host/...` reads as is and `ssh://user:secret@host/...` becomes `ssh://user@host/...`.
+ * The user name ends at the first `:`, the password at the last `@` of the authority.
  * @param {string} text
  */
-function withoutHttpUserinfo(text) {
-  return text.replace(/(https?:\/\/)[^\s/]*@/gi, '$1')
+function withoutCredentials(text) {
+  return text
+    .replace(/(https?:\/\/)[^\s/]*@/gi, '$1')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:]*):[^\s/]*@/gi, '$1@')
 }
 
 /**
@@ -739,7 +743,7 @@ function parseRemote(url) {
   const full = URL_REMOTE.exec(url)
   if (full) {
     const [, , , host, owner, name] = full
-    return { remote: withoutHttpUserinfo(url), repo: `${host}/${owner}/${name}` }
+    return { remote: withoutCredentials(url), repo: `${host}/${owner}/${name}` }
   }
   const scp = SCP_REMOTE.exec(url)
   return scp ? { remote: url, repo: `${scp[1]}/${scp[2]}/${scp[3]}` } : undefined
@@ -757,7 +761,7 @@ function isPullOf(url, repo) {
 
 /** @param {string} text */
 function tail(text) {
-  const clean = withoutHttpUserinfo(text).trim()
+  const clean = withoutCredentials(text).trim()
   return clean.length > 500 ? `…${clean.slice(-500)}` : clean
 }
 

@@ -667,7 +667,7 @@ describe('publish against real git', () => {
     })
   })
 
-  describe('a credential in an https push URL', () => {
+  describe('a credential in a push URL', () => {
     const TOKEN = 'ghp_FAKE0000NOT0A0REAL0TOKEN0000'
     const tokenUrl = (token = TOKEN) => `https://${token}@example.test/owner/repo.git`
     const SHOWN = 'https://example.test/owner/repo.git'
@@ -774,6 +774,51 @@ describe('publish against real git', () => {
         git(work, 'remote', 'set-url', 'origin', moved)
         expect(await publish(work, proposal, fakePrs().port)).toMatchObject({ reason: 'plan-changed' })
       }
+    })
+
+    const SECRET = 'FAKE0SECRET0NOT0REAL0000'
+
+    it.each(['ssh', 'git+ssh', 'ssh+git'])(
+      'keeps only the user name of a %s URL, in the plan and in a refusal that echoes the URL',
+      async (scheme) => {
+        const { dir, work } = repos()
+        const raw = `${scheme}://user:${SECRET}@example.test/owner/repo.git`
+        git(work, 'remote', 'set-url', 'origin', raw)
+        writeFileSync(join(work, 'x.txt'), 'x\n')
+        const proposal = await propose(work, { title: 'T', body: '', branch: 'feat/t' })
+        expect(proposal).toMatchObject({ remote: `${scheme}://user@example.test/owner/repo.git`, repo: REPO })
+        const restore = networkGit(dir, `fatal: could not read from '${raw}'`)
+        try {
+          const result = await publish(work, proposal, fakePrs().port)
+          expect(result).toMatchObject({ status: 'refused', reason: 'push-rejected' })
+          expect(JSON.stringify(result)).toContain(`${scheme}://user@example.test`)
+          expect(JSON.stringify(result)).not.toContain(SECRET)
+        } finally {
+          restore()
+        }
+      },
+    )
+
+    it.each([
+      ['ssh', `ssh://us@er:${SECRET}:more@part@example.test/owner/repo.git`, 'ssh://us@er@example.test'],
+      ['https', `https://us@er:${SECRET}:more@part@example.test/owner/repo.git`, 'https://example.test'],
+    ])('scrubs a %s userinfo with more than one @ and : from error text', async (_, raw, shown) => {
+      const { work } = repos()
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      const proposal = await propose(work, { title: 'T', body: '', branch: 'feat/t' })
+      const prs = {
+        async find() {
+          return undefined
+        },
+        async create() {
+          throw new Error(`gh: could not push to ${raw}`)
+        },
+      }
+      const result = await publish(work, proposal, prs)
+      expect(result).toMatchObject({ status: 'refused', reason: 'pr-failed' })
+      const text = JSON.stringify(result)
+      expect(text).toContain(shown)
+      for (const piece of [SECRET, 'more', 'part@']) expect(text).not.toContain(piece)
     })
 
     it('keeps the user name of ssh and scp-style remotes', async () => {
