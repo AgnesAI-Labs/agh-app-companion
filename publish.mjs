@@ -721,17 +721,25 @@ const NETWORK_MS = 120_000
 const MAX_OUTPUT = 1 << 20
 
 /**
- * The push URL as the approval card shows it, password masked, and the `host/owner/name` it names;
- * undefined unless it names exactly one repository on a forge.
+ * The one rule for credentials: the userinfo of every http(s) URL in `text` is dropped, whether a
+ * token sits in the user name or the password. ssh user names (`git@`) are not secrets and stay.
+ * @param {string} text
+ */
+function withoutHttpUserinfo(text) {
+  return text.replace(/(https?:\/\/)[^\s/]*@/gi, '$1')
+}
+
+/**
+ * The push URL as the approval card shows it, without http(s) userinfo, and the `host/owner/name` it
+ * names; undefined unless it names exactly one repository on a forge.
  * @param {string} url
  * @returns {{ remote: string, repo: string } | undefined}
  */
 function parseRemote(url) {
   const full = URL_REMOTE.exec(url)
   if (full) {
-    const [, user, password, host, owner, name] = full
-    const remote = password ? url.replace(`${user}:${password}@`, `${user}:***@`) : url
-    return { remote, repo: `${host}/${owner}/${name}` }
+    const [, , , host, owner, name] = full
+    return { remote: withoutHttpUserinfo(url), repo: `${host}/${owner}/${name}` }
   }
   const scp = SCP_REMOTE.exec(url)
   return scp ? { remote: url, repo: `${scp[1]}/${scp[2]}/${scp[3]}` } : undefined
@@ -749,7 +757,7 @@ function isPullOf(url, repo) {
 
 /** @param {string} text */
 function tail(text) {
-  const clean = text.replace(/(:\/\/)[^/@\s]*@/g, '$1').trim()
+  const clean = withoutHttpUserinfo(text).trim()
   return clean.length > 500 ? `…${clean.slice(-500)}` : clean
 }
 

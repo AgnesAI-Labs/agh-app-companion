@@ -593,7 +593,7 @@ describe('publish against real git', () => {
     })
   })
 
-  it('names the repository from the push URL, masking a password, and refuses one it cannot read exactly', async () => {
+  it('names the repository from the push URL, dropping https userinfo, and refuses one it cannot read exactly', async () => {
     const { work } = repos()
     writeFileSync(join(work, 'x.txt'), 'x\n')
     const p = plan({ title: 'T', body: '', branch: 'feat/t' })
@@ -603,8 +603,8 @@ describe('publish against real git', () => {
     }
     for (const [url, remote, repo] of [
       ['https://github.com/o/r.git', 'https://github.com/o/r.git', 'github.com/o/r'],
-      ['https://user:token@github.com/o/r', 'https://user:***@github.com/o/r', 'github.com/o/r'],
-      ['https://user@github.com/o/r/', 'https://user@github.com/o/r/', 'github.com/o/r'],
+      ['https://user:token@github.com/o/r', 'https://github.com/o/r', 'github.com/o/r'],
+      ['https://user@github.com/o/r/', 'https://github.com/o/r/', 'github.com/o/r'],
       [
         'ssh://git@forge.example.test:2222/o/r.git',
         'ssh://git@forge.example.test:2222/o/r.git',
@@ -664,6 +664,125 @@ describe('publish against real git', () => {
     expect(await preparePublish({ root: work, plan: p })).toMatchObject({
       status: 'refused',
       reason: 'no-remote',
+    })
+  })
+
+  describe('a credential in an https push URL', () => {
+    const TOKEN = 'ghp_FAKE0000NOT0A0REAL0TOKEN0000'
+    const tokenUrl = (token = TOKEN) => `https://${token}@example.test/owner/repo.git`
+    const SHOWN = 'https://example.test/owner/repo.git'
+
+    /**
+     * Puts a git first on PATH that answers ls-remote and push itself, so an https remote needs no
+     * network; `failWith` makes it fail those with that text on stderr.
+     */
+    function networkGit(dir: string, failWith?: string) {
+      const bin = join(dir, 'net-bin')
+      mkdirSync(bin, { recursive: true })
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+      const answer = failWith ? `{ printf '%s\\n' '${failWith}' >&2; exit 128; }` : 'exit 0'
+      writeFileSync(
+        join(bin, 'git'),
+        `#!/bin/sh\ncase "$1" in ls-remote|push) ${answer};; esac\nexec '${realGit}' "$@"\n`,
+        { mode: 0o755 },
+      )
+      const path = process.env.PATH
+      process.env.PATH = `${bin}:${path}`
+      return () => {
+        process.env.PATH = path
+      }
+    }
+
+    const leaks = (value: unknown) => JSON.stringify(value).includes(TOKEN.slice(4, 20))
+
+    it.each([
+      ['as the user name', tokenUrl()],
+      ['as the password after a fixed user', `https://x-access-token:${TOKEN}@example.test/owner/repo.git`],
+    ])('never reaches the plan, the tool result or a log line, %s', async (_, url) => {
+      const { work } = repos()
+      git(work, 'remote', 'set-url', 'origin', url)
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      const logged: unknown[] = []
+      const ctx = {
+        session: { workspaceRoot: work },
+        signal: new AbortController().signal,
+        log: { info: (...args: unknown[]) => logged.push(args) },
+      }
+      const result = await publishPlanTool().execute({ title: 'T', body: '', branch: 'feat/t' }, ctx as never)
+      expect(result.structured).toMatchObject({ status: 'planned', proposal: { remote: SHOWN, repo: REPO } })
+      expect(leaks(result)).toBe(false)
+      expect(leaks(logged)).toBe(false)
+    })
+
+    it('never reaches the publish result, and a change of only the credential is not a change', async () => {
+      const { dir, work } = repos()
+      git(work, 'remote', 'set-url', 'origin', tokenUrl('ghp_FAKE1111OLD1TOKEN11111111111'))
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      const proposal = await propose(work, { title: 'T', body: '', branch: 'feat/t' })
+      git(work, 'remote', 'set-url', 'origin', tokenUrl())
+      const restore = networkGit(dir)
+      try {
+        const result = await publish(work, proposal, fakePrs().port)
+        expect(result).toMatchObject({ status: 'published', remote: SHOWN })
+        expect(leaks(result)).toBe(false)
+      } finally {
+        restore()
+      }
+    })
+
+    it.each([
+      ['git cannot reach the remote', 'push-rejected'],
+      ['gh fails', 'pr-failed'],
+    ])('never reaches a refusal detail when %s, even when the error echoes the URL', async (_, reason) => {
+      const { dir, work } = repos()
+      git(work, 'remote', 'set-url', 'origin', tokenUrl())
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      const proposal = await propose(work, { title: 'T', body: '', branch: 'feat/t' })
+      const echoed = `fatal: unable to access '${tokenUrl()}/': could not resolve host`
+      const restore = networkGit(dir, reason === 'push-rejected' ? echoed : undefined)
+      const prs = {
+        async find() {
+          return undefined
+        },
+        async create() {
+          throw new Error(echoed)
+        },
+      }
+      try {
+        const result = await publish(work, proposal, prs)
+        expect(result).toMatchObject({
+          status: 'refused',
+          reason,
+          detail: expect.stringContaining('example.test'),
+        })
+        expect(leaks(result)).toBe(false)
+      } finally {
+        restore()
+      }
+    })
+
+    it('still refuses a push URL that moved to another host, scheme or repository', async () => {
+      const { work } = repos()
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      git(work, 'remote', 'set-url', 'origin', tokenUrl())
+      const proposal = await propose(work, { title: 'T', body: '', branch: 'feat/t' })
+      for (const moved of [
+        `https://${TOKEN}@other.test/owner/repo.git`,
+        `http://${TOKEN}@example.test/owner/repo.git`,
+        `https://${TOKEN}@example.test/owner/other.git`,
+      ]) {
+        git(work, 'remote', 'set-url', 'origin', moved)
+        expect(await publish(work, proposal, fakePrs().port)).toMatchObject({ reason: 'plan-changed' })
+      }
+    })
+
+    it('keeps the user name of ssh and scp-style remotes', async () => {
+      const { work } = repos()
+      writeFileSync(join(work, 'x.txt'), 'x\n')
+      for (const url of ['ssh://git@example.test/owner/repo.git', 'git@example.test:owner/repo.git']) {
+        git(work, 'remote', 'set-url', 'origin', url)
+        expect(await propose(work, { title: 'T', body: '', branch: 'feat/t' })).toMatchObject({ remote: url })
+      }
     })
   })
 
