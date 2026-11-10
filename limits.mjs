@@ -9,7 +9,7 @@ const DAY = 24 * HOUR
  *   workspaceConcurrency: number, maxHops: number, refusalLimit: number,
  *   taskTokens: number | null, taskCost: number | null, dailyCost: number | null,
  *   proposalTtlMs: number, recentMessages: number, recentWindowMs: number,
- *   snapshotTasks: number, snapshotEndedMs: number, answerMaxChars: number, candidateMax: number,
+ *   snapshotTasks: number, snapshotEndedMs: number, answerMaxChars: number, titleMaxChars: number, candidateMax: number,
  *   inboxTtlMs: number, outboxTtlMs: number, compactAfterMs: number,
  *   storeWarnRatio: number, storeRefuseRatio: number, judgeFailuresNotify: number,
  * }} Limits
@@ -30,6 +30,7 @@ export const LIMITS = Object.freeze({
   snapshotTasks: 50,
   snapshotEndedMs: 7 * DAY,
   answerMaxChars: 200,
+  titleMaxChars: 120,
   candidateMax: 3,
   inboxTtlMs: 7 * DAY,
   outboxTtlMs: 7 * DAY,

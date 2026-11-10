@@ -227,7 +227,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
           const entry = byId.get(d.message)
           outcome.set(d.message, forward(t, d.taskId, { ...entry, signal: { ...entry.signal, text: textOf.get(d.message) } }, { unquoted: true, picked: false }))
         } else if (d.kind === 'ask') {
-          choiceCard(t, d.message, d.candidates.map((id) => getTask(t, id)), d.text)
+          choiceCard(t, d.message, d.candidates.map((id) => getTask(t, id)), TEXT.which)
           outcome.set(d.message, { kind: 'asked', taskIds: d.candidates })
         } else if (d.kind === 'answer') {
           enqueueMessage(t, { deliveryKey: `answer:${d.message}`, text: d.text, about: d.message })

@@ -99,7 +99,7 @@ describe('chat channel inbound', () => {
   it('sends a typed answer to a choice card to the judge, not into the task', async () => {
     const { h, gw, channel } = await setup()
     const a = await h.create('任务甲', 'api')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, text: '接到这个吗？', candidates: [a] }))
+    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
     await channel.receive(gw.message('那个也改一下'))
     await h.tick()
     const card = gw.shown.find((m) => m.message.blocks[0].actions)!
@@ -115,7 +115,7 @@ describe('chat channel card buttons', () => {
   it('turns a click on a choice card into the owner pick', async () => {
     const { h, gw, channel } = await setup()
     const a = await h.create('任务甲', 'api')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, text: '接到哪个？', candidates: [a] }))
+    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
     await channel.receive(gw.message('那个也改一下'))
     await h.tick()
     const card = gw.shown.find((m) => m.message.blocks[0].actions)!

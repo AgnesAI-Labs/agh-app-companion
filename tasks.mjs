@@ -38,6 +38,7 @@ import { namesOtherWorkspace } from './signals.mjs'
 
 export const TEXT = Object.freeze({
   fallback: '这句我没处理好，换个说法再试一次？',
+  which: '这条要接到哪个任务？',
   whichOnCard: '这条要接到卡片上的哪个任务？',
   ended: '这条已结束，要新建吗？',
   storeFull: '存储快满了，先不新建任务。清理旧任务后再试。',

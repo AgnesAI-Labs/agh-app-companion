@@ -65,10 +65,11 @@ describe('attaching unquoted messages to existing tasks (spec §4.19)', () => {
     const h = harness()
     const a = await doneTask(h, '修登录')
     const b = await doneTask(h, '改登录样式', 'web')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, text: '接到哪个？', candidates: [a, b] }))
+    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a, b] }))
     await h.say('登录那块再看看')
     await h.tick()
     expect(cards(h).at(-1)!.card).toEqual({ options: [{ taskId: a, title: '修登录' }, { taskId: b, title: '改登录样式' }], allowNew: true })
+    expect(cards(h).at(-1)!.text).toBe(TEXT.which)
     await h.tick()
     expect(h.tasks().map((t) => t.state)).toEqual(['done', 'done'])
     expect(h.tasks()).toHaveLength(2)
@@ -77,7 +78,7 @@ describe('attaching unquoted messages to existing tasks (spec §4.19)', () => {
   it('a click on the card attaches to the picked task once', async () => {
     const h = harness()
     const a = await doneTask(h, '修登录')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, text: '接到哪个？', candidates: [a] }))
+    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
     await h.say('登录那块再看看')
     await h.tick()
     const card = cards(h).at(-1)!
@@ -91,7 +92,7 @@ describe('attaching unquoted messages to existing tasks (spec §4.19)', () => {
   it('"new" on the card sends the message to the judge to create a task', async () => {
     const h = harness()
     const a = await doneTask(h, '修登录')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, text: '接到哪个？', candidates: [a] }))
+    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
     await h.say('登录页加验证码')
     await h.tick()
     h.setJudge(({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'api', title: '验证码' }))
