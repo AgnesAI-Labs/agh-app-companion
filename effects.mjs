@@ -31,7 +31,13 @@ export async function runSessionOps(deps) {
       continue
     }
     if (op.kind === 'interrupt') {
-      if (task.sessionId) await deps.sessions.interrupt(task.sessionId)
+      try {
+        if (task.sessionId) await deps.sessions.interrupt(task.sessionId)
+      } catch {
+        // The task already shows the stop; the op stays and is tried again next pass without holding up the others.
+        blocked.add(op.taskId)
+        continue
+      }
       drop()
       continue
     }
