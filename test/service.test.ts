@@ -273,6 +273,38 @@ describe('companion service', () => {
     await second.shutdown()
   })
 
+  it('after a long gap the service reads what the platform did meanwhile before its first pass, and repeats nothing', async () => {
+    const owned = memoryOwnedStore()
+    const gateway = fakeGateway()
+    const sessions = fakeSessions({
+      reply(request, input) {
+        if (request.bundle === ROLES.worker.bundle) return undefined
+        const { batch } = readJudgeInput(input)
+        return { outcome: 'completed', text: decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'api', title: '修登录报错' }) }
+      },
+    })
+    const first = service({ store: owned, sessions: sessions.port, gateway })
+    const svc = await first.started
+    await svc.receive(gateway.message('登录页报错了，修一下'))
+    await tick()
+    await tick()
+    await first.shutdown()
+    const [worker] = sessions.byRole('worker')
+    sessions.finish(worker!.sessionId, 'completed', '改好了')
+    await vi.advanceTimersByTimeAsync(9 * 60 * 60 * 1000)
+    const second = service({ store: owned, sessions: sessions.port, gateway })
+    const again = await second.started
+    await vi.advanceTimersByTimeAsync(0)
+    expect(((await again.desk()) as any).tasks.recent).toEqual([expect.objectContaining({ id: 'T-0001', state: 'done' })])
+    await tick()
+    await tick()
+    expect(bodies(gateway).filter((b) => b.includes('：完成'))).toHaveLength(1)
+    expect(sessions.byRole('worker')).toHaveLength(1)
+    expect(sessions.byRole('judge')).toHaveLength(1)
+    expect(worker!.inputs).toHaveLength(1)
+    await second.shutdown()
+  })
+
   it('refuses a store bound to another owner: nothing delivered, no status answered, nothing deleted', async () => {
     const owned = memoryOwnedStore()
     const gateway = fakeGateway()
