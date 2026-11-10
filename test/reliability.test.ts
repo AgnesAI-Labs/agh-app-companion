@@ -26,3 +26,20 @@ describe('a session operation the platform refuses does not stop the rest of the
     expect(h.store.scan('op/')).toEqual([])
   })
 })
+
+describe('usage the platform sometimes cannot report', () => {
+  it('a reading that goes unknown and comes back is counted once, not read as 0 in between', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.setUsage(sid, { tokens: 100, cost: 0.5 })
+    await h.tick()
+    h.sessions.setUsage(sid, { tokens: null, cost: null })
+    await h.tick()
+    expect(h.task(id).usage).toEqual({ tokens: 100, cost: 0.5 })
+    h.sessions.setUsage(sid, { tokens: 150, cost: 0.75 })
+    await h.tick()
+    expect(h.task(id).usage).toEqual({ tokens: 150, cost: 0.75 })
+    expect(h.store.get('usage/2026-11-10')).toMatchObject({ tokens: 150, cost: 0.75, unknown: true })
+  })
+})

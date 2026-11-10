@@ -164,7 +164,8 @@ function account(tx, taskId, reading) {
     cost: reading.cost === null ? null : reading.cost - (task.reading.cost ?? 0),
   }
   const usage = { tokens: plus(task.usage.tokens, delta.tokens), cost: plus(task.usage.cost, delta.cost) }
-  tx.store.putTask({ ...task, usage, reading })
+  // An unknown reading keeps the last known one as the baseline, so the next known reading adds only what is new.
+  tx.store.putTask({ ...task, usage, reading: { tokens: reading.tokens ?? task.reading.tokens, cost: reading.cost ?? task.reading.cost } })
   const dayKey = `usage/${tx.at.slice(0, 10)}`
   const day = tx.store.get(dayKey) ?? { tokens: 0, cost: 0, unknown: false }
   const today = {
