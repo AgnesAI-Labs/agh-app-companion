@@ -124,7 +124,7 @@ describe('package declaration', () => {
     )
     const clientServices = JSON.parse(readFileSync(new URL('../client/agnes.client.json', import.meta.url), 'utf8')).client.services
     expect(clientServices).toEqual(
-      expect.arrayContaining(['companion.desk', 'companion.submit', 'companion.status', 'companion.configuration', 'companion.configure']),
+      expect.arrayContaining(['companion.desk', 'companion.submit', 'companion.status', 'companion.configuration', 'companion.check', 'companion.configure']),
     )
     for (const name of clientServices) expect(row.capabilities.services.map((s: { name: string }) => s.name)).toContain(name)
   })
