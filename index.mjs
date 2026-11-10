@@ -1,3 +1,4 @@
+import { publishPlanTool, publishTool } from './publish.mjs'
 import { DEFAULT_SETTINGS, parseSettings, SETTINGS_SCHEMA } from './settings.mjs'
 import { openStore } from './store.mjs'
 
@@ -18,8 +19,8 @@ export async function startEngine(init) {
 }
 
 export const main = {
-  inject: ['services', 'profileRuntime'],
-  /** @param {Pick<import('@agnes/extension-api').PluginContextFacets, 'services' | 'profileRuntime'>} ctx */
+  inject: ['services', 'profileRuntime', 'tools'],
+  /** @param {Pick<import('@agnes/extension-api').PluginContextFacets, 'services' | 'profileRuntime' | 'tools'>} ctx */
   apply(ctx) {
     ctx.profileRuntime.register({
       id: ENGINE_ID,
@@ -27,5 +28,7 @@ export const main = {
       defaultConfig: DEFAULT_SETTINGS,
       start: startEngine,
     })
+    ctx.tools.register(publishPlanTool())
+    ctx.tools.register(publishTool())
   },
 }

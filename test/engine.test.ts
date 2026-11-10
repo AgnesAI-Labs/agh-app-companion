@@ -18,7 +18,7 @@ const init = (store = memoryOwnedStore(), config: unknown = DEFAULT_SETTINGS) =>
 describe('managed engine', () => {
   it('registers one resource whose configuration is the settings schema', () => {
     const register = vi.fn()
-    main.apply({ profileRuntime: { register } } as never)
+    main.apply({ profileRuntime: { register }, tools: { register: vi.fn() } } as never)
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({ id: ENGINE_ID, configSchema: SETTINGS_SCHEMA, defaultConfig: DEFAULT_SETTINGS }),
     )

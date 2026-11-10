@@ -137,9 +137,9 @@ describe('role Bundles through the platform preset resolver', () => {
     expect(worker.doc.ext_ui).toMatchObject({ unattended: 'decline' })
   })
 
-  it('declares publish as this package tool, so only worker (no allowlist) can see it', () => {
-    expect(row.capabilities.tools.names).toEqual(['publish'])
-    expect(resolvePreset('companion-judge', docs).view.tools.allow).not.toContain('publish')
+  it('declares publish and publish_plan as this package tools, so only worker (no allowlist) can see them', () => {
+    expect(row.capabilities.tools.names).toEqual(['publish', 'publish_plan'])
+    expect(resolvePreset('companion-judge', docs).view.tools.allow).toEqual([])
   })
 
   it('declares a deny of the skill install tools in the worker session patch (N9; not proven to bind at runtime)', () => {
