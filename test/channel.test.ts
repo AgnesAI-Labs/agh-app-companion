@@ -207,6 +207,73 @@ describe('chat channel setup', () => {
 
   it('exposes the owner conversation a worker session binds to, and nothing about approvals', async () => {
     const { channel } = await setup()
-    expect(channel.binding()).toEqual({ instanceId: 'im-1', targetId: OWNER.targetId })
+    expect(await channel.binding()).toEqual({ instanceId: 'im-1', targetId: OWNER.targetId })
+  })
+})
+
+describe('chat channel owner changes while running', () => {
+  const outbound = (deliveryKey: string) => ({ deliveryKey, text: 'T-0001 修首页标题：完成', detail: '改了 src/app.ts', card: null })
+
+  it('drops a message from the owner sender in a chat other than the owner chat', async () => {
+    const { h, gw, channel } = await setup()
+    const result = await channel.receive(gw.message('帮我看看登录页', { chat: { id: 'dm-other', type: 'dm' } }))
+    expect(result).toMatchObject({ kind: 'dropped' })
+    expect(h.store.scan('inbox/')).toEqual([])
+  })
+
+  it('refuses everything after a rebind, to the old owner and the new one, and says a restart is needed', async () => {
+    const { h, gw, channel } = await setup()
+    const id = await h.create('修首页标题')
+    const shownBefore = gw.shown.length
+    const inboxBefore = h.store.scan('inbox/').length
+    gw.rebind(gw.nextOwner)
+
+    const fromOld = await channel.receive(gw.message('继续'))
+    const fromNew = await channel.receive(gw.message('我是新主人', { sender: { userId: gw.nextOwner.userId }, chat: { id: gw.nextOwner.chatId, type: 'dm' } }))
+    expect(fromOld).toMatchObject({ kind: 'dropped' })
+    expect(fromNew).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('rebound') })
+    expect(h.store.scan('inbox/')).toHaveLength(inboxBefore)
+
+    await expect(channel.deliver(outbound('after-rebind'))).rejects.toThrow(/rebound/)
+    await expect(channel.binding()).rejects.toThrow(/rebound/)
+    enqueueMessage({ store: h.store, at: h.now(), limits: LIMITS, workspaces: ['api'] }, { deliveryKey: 'late:1', text: '结果', taskIds: [id] })
+    await h.tick()
+    expect(gw.shown).toHaveLength(shownBefore)
+    expect(gw.shown.filter((m) => m.chatId === OWNER.chatId)).toHaveLength(shownBefore)
+    expect(h.store.get('outbox/late:1').sentAt).toBeNull()
+    expect(channel.status()).toMatch(/rebound.*restart/)
+  })
+
+  it('treats a change of any one owner field as a rebind', async () => {
+    const { gw, channel } = await setup()
+    gw.rebind({ ...OWNER, userId: 'u-other' })
+    expect(await channel.receive(gw.message('继续'))).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('rebound') })
+    gw.rebind({ ...OWNER, chatId: 'dm-new' })
+    await expect(channel.deliver(outbound('k-chat'))).rejects.toThrow(/rebound/)
+    gw.rebind({ ...OWNER, targetId: 'c'.repeat(32) })
+    await expect(channel.binding()).rejects.toThrow(/rebound/)
+    expect(gw.shown).toHaveLength(0)
+  })
+
+  it('drops inbound and fails delivery while the instance is stopped or removed, and resumes when it runs again', async () => {
+    const { h, gw, channel } = await setup()
+    expect(channel.status()).toBeNull()
+    for (const [change, status] of [[() => gw.setRunning(false), /not running/], [() => gw.rebind(null), /no bound owner/]] as const) {
+      change()
+      expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: expect.stringMatching(status) })
+      await expect(channel.deliver(outbound(`k-${String(status)}`))).rejects.toThrow(status)
+      expect(channel.status()).toMatch(status)
+      gw.setRunning(true)
+      gw.rebind(OWNER)
+    }
+    expect((await channel.receive(gw.message('又在了'))).kind).toBe('accepted')
+    expect(channel.status()).toBeNull()
+
+    gw.remove()
+    expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('not available') })
+    await expect(channel.deliver(outbound('k-removed'))).rejects.toThrow(/not available/)
+    await expect(channel.binding()).rejects.toThrow(/not available/)
+    expect(gw.shown).toHaveLength(0)
+    expect(h.store.scan('inbox/')).toHaveLength(1)
   })
 })

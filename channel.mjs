@@ -3,7 +3,9 @@ import { INSTANCE_ID, isInstanceOwner, parseChannelEvent } from './channel-contr
 /**
  * The chat channel adapter: the engine's `Channel` port outbound, InboundSignal inbound. Authority
  * comes only from the gateway's verified sender id against the instance's bound owner (A2, A3);
- * approval clicks stay with the channel runner (A10).
+ * approval clicks stay with the channel runner (A10). Every receive, send and binding re-reads the
+ * instance and refuses unless it still runs with the owner bound at open: outbox rows do not record
+ * whom they were written for, so after a rebind none may go to anyone until the service restarts.
  *
  * @typedef {import('./channel-contract.mjs').ChannelEvent} ChannelEvent
  * @typedef {import('./channel-contract.mjs').ChannelGateway} ChannelGateway
@@ -12,7 +14,8 @@ import { INSTANCE_ID, isInstanceOwner, parseChannelEvent } from './channel-contr
  * @typedef {{ instanceId: string, targetId: string }} SessionBinding  what a worker session's `start` binds to (A10)
  * @typedef {{ kind: 'accepted' | 'duplicate', key: string } | { kind: 'dropped', reason: string } | { kind: 'invalid', error: string }} ReceiveResult
  *   every result is final: the gateway acknowledges the event once `receive` returns, and redelivers only if it throws
- * @typedef {import('./effects.mjs').Channel & { receive(raw: unknown): Promise<ReceiveResult>, binding(): SessionBinding }} ChatChannel
+ * @typedef {import('./effects.mjs').Channel & { receive(raw: unknown): Promise<ReceiveResult>, binding(): Promise<SessionBinding>, status(): string | null }} ChatChannel
+ *   status is the refusal from the last instance check, or null while the instance serves the owner
  */
 
 /** Notification titles show on a lock screen (A9), so they are fixed text with no task content. */
@@ -77,6 +80,19 @@ export async function openChannel({ settings, gateway, store, receive }) {
   if (!isInstanceOwner(info.owner)) return { ok: false, status: `channel instance ${instanceId} has no bound owner` }
   const owner = info.owner
   const source = `channel:${instanceId}`
+  /** @type {string | null} */
+  let status = null
+  /** @returns {Promise<string | null>} why the instance cannot serve the owner bound at open, or null */
+  const refusal = async () => {
+    const now = await gateway.instance(instanceId)
+    if (!now) status = `channel instance ${instanceId} is not available`
+    else if (!now.running) status = `channel instance ${instanceId} is not running`
+    else if (!isInstanceOwner(now.owner)) status = `channel instance ${instanceId} has no bound owner`
+    else if (now.owner.userId !== owner.userId || now.owner.chatId !== owner.chatId || now.owner.targetId !== owner.targetId)
+      status = `channel instance ${instanceId} was rebound to another owner; restart the companion service to serve the new owner`
+    else status = null
+    return status
+  }
   /** @param {string} messageId @returns {OutboxEntry | undefined} */
   const outboxByMessage = (messageId) => store.scan('outbox/').find((row) => row.value.messageId === messageId)?.value
 
@@ -86,8 +102,10 @@ export async function openChannel({ settings, gateway, store, receive }) {
       const parsed = parseChannelEvent(raw)
       if (!parsed.ok) return { kind: 'invalid', error: parsed.error }
       const event = parsed.event
+      const refused = await refusal()
+      if (refused) return { kind: 'dropped', reason: refused }
       // Strangers stop here, before the inbox, so their volume cannot fill the store.
-      if (event.chat.type !== 'dm' || event.sender.userId !== owner.userId) return { kind: 'dropped', reason: 'not from the owner' }
+      if (event.chat.type !== 'dm' || event.chat.id !== owner.chatId || event.sender.userId !== owner.userId) return { kind: 'dropped', reason: 'not from the owner' }
       const fields = EVENT_TO_SIGNAL[event.kind](event, outboxByMessage)
       if ('drop' in fields) return { kind: 'dropped', reason: /** @type {string} */ (fields.drop) }
       const result = await receive({ source, eventId: event.eventId, at: event.at, origin: 'owner', ...fields })
@@ -99,6 +117,8 @@ export async function openChannel({ settings, gateway, store, receive }) {
     // the chat platform has no idempotency key of its own.
     async deliver(message) {
       const key = message.deliveryKey
+      const refused = await refusal()
+      if (refused) throw new Error(refused)
       const before = await gateway.delivery(instanceId, key)
       if (before.state === 'delivered') return { messageId: before.messageId }
       if (before.state === 'pending') throw new Error(`delivery ${key} is still pending at the channel`)
@@ -111,7 +131,13 @@ export async function openChannel({ settings, gateway, store, receive }) {
       }
     },
 
-    binding: () => ({ instanceId, targetId: owner.targetId }),
+    async binding() {
+      const refused = await refusal()
+      if (refused) throw new Error(refused)
+      return { instanceId, targetId: owner.targetId }
+    },
+
+    status: () => status,
   }
   return { ok: true, channel: Object.freeze(channel) }
 }

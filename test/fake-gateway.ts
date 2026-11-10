@@ -11,13 +11,17 @@ export function fakeGateway(options: { instance?: string; owner?: typeof OWNER |
   const instanceId = options.instance ?? 'im-1'
   const ledger = new Map<string, Delivery>()
   const shown: { chatId: string; deliveryKey: string; message: any; messageId: string }[] = []
+  let state: { running: boolean; owner: typeof OWNER | null } | undefined = {
+    running: options.running ?? true,
+    owner: options.owner === undefined ? OWNER : options.owner,
+  }
   let mode: 'ok' | 'down' | 'lostResponse' | 'stuck' = 'ok'
   let sends = 0
   let seq = 0
   const port = {
     async instance(id: string) {
-      if (id !== instanceId) return undefined
-      return { running: options.running ?? true, owner: options.owner === undefined ? OWNER : options.owner }
+      if (id !== instanceId || !state) return undefined
+      return { running: state.running, owner: state.owner }
     },
     async send(id: string, target: { chatId: string; deliveryKey: string }, message: any) {
       sends++
@@ -59,6 +63,16 @@ export function fakeGateway(options: { instance?: string; owner?: typeof OWNER |
     setMode(next: typeof mode) {
       mode = next
     },
+    /** Changes the instance while the companion runs: bind another owner, stop or start it, or remove it. */
+    rebind(owner: typeof OWNER | null) {
+      if (state) state.owner = owner
+    },
+    setRunning(running: boolean) {
+      if (state) state.running = running
+    },
+    remove() {
+      state = undefined
+    },
     /** A private message event in the draft contract's shape. */
     message(text: string, fields: Record<string, any> = {}) {
       const { quotedMessageId, ...rest } = fields
@@ -77,5 +91,6 @@ export function fakeGateway(options: { instance?: string; owner?: typeof OWNER |
       return { ...base(fields), kind: 'cardAction', cardBizId: `biz-${messageId}`, messageId, value }
     },
     stranger: { userId: 'u-stranger', displayName: 'Owner', raw: {} },
+    nextOwner: { userId: 'u-next', chatId: 'dm-next', targetId: 'b'.repeat(32) },
   }
 }

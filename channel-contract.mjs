@@ -12,7 +12,10 @@
  *       runner, never a display name. The companion compares nothing else.
  *   A3  Owner: `instance(id)` reports whether the instance runs and its one bound owner:
  *       `userId`, the private `chatId` to send to, and the 32-hex `targetId` that `channel.bind`
- *       uses. Settings hold only the instance id.
+ *       uses. Settings hold only the instance id. The owner can change while the companion runs,
+ *       so `instance(id)` is read before every event, send and binding, and must be cheap enough
+ *       for that. This file lists no notice that an instance was rebound, stopped or removed; if
+ *       the draft has one, it would replace these reads.
  *   A4  Instance ids follow the channel config pattern `^[a-z][a-z0-9-]{0,47}$`.
  *   A5  Quotes: a message event carries `quotedMessageId`, the id of the message the owner replied
  *       to. The draft has only the mention booleans.
