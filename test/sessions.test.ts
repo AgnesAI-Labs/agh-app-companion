@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { ROLES, startRequest } from '../sessions.mjs'
+import { platformSessions } from '../platform-sessions.mjs'
 import { fakeSessions } from './fake-sessions.js'
+import { reconcile } from '../reconcile.mjs'
+import { harness } from './harness.js'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
@@ -91,5 +94,47 @@ describe('managed sessions contract (fake, not proven on the real platform)', ()
     expect(events).toContainEqual({ kind: 'approval', seq: 2, state: 'decided', category: 'permission', summary: '' })
     expect((await fake.port.events(sessionId, { afterSeq: lastSeq })).events).toEqual([])
     expect(await fake.port.result(sessionId)).toEqual({ turn: { status: 'completed' }, text: 'done' })
+  })
+})
+
+describe('the platform adapter and approval outcomes', () => {
+  const outcome = { kind: 'approvalOutcome', seq: 5, approvalSeq: 4, outcome: 'rejected', via: 'person' }
+
+  it('passes a platform approvalOutcome event through unchanged, by afterSeq', async () => {
+    const calls: unknown[] = []
+    const raw = { events: [{ kind: 'approval', seq: 4, state: 'decided', category: 'permission', summary: '' }, outcome], lastSeq: 5 }
+    const port = platformSessions({
+      events: async (id: string, options?: unknown) => (calls.push([id, options]), raw),
+    } as never)!
+    expect(await port.events('s1', { afterSeq: 3 })).toEqual(raw)
+    expect(calls).toEqual([['s1', { afterSeq: 3 }]])
+  })
+
+  it('counts hand-written platform outcomes in reconcile through the real adapter, once across a repeat pass', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    const base = h.task(id).cursor
+    const page = [4, 6, 8].flatMap((n) => [
+      { kind: 'approval', seq: n, state: 'decided', category: 'permission', summary: '' },
+      { kind: 'approvalOutcome', seq: n + 1, approvalSeq: n, outcome: 'rejected', via: 'person' },
+    ])
+    const platform = {
+      ...h.sessions.port,
+      events: async (_id: string, o?: { afterSeq?: number }) => ({
+        events: page.filter((e) => e.seq > (o?.afterSeq ?? 0)),
+        lastSeq: 9,
+      }),
+    }
+    const deps = () => ({
+      tx: () => ({ store: h.store, at: h.now(), limits: h.limits, workspaces: ['api', 'web'] }),
+      sessions: platformSessions(platform as never)!,
+    })
+    expect(base).toBeLessThan(4)
+    await reconcile(deps() as never)
+    expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'refused', refusals: 3, cursor: 9 })
+    await reconcile(deps() as never)
+    expect(h.task(id)).toMatchObject({ refusals: 3, cursor: 9 })
+    expect(sid).toBeTruthy()
   })
 })

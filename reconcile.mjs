@@ -78,16 +78,20 @@ function apply(tx, taskId, event, reply) {
   const task = getTask(tx, taskId)
   if (event.kind === 'approval' && event.state === 'expired') transit(tx, taskId, 'approvalExpired')
   if (event.kind === 'approval' && event.state === 'decided' && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
-  // The platform reports neither an approval's verdict nor its later state change (the node keeps its
-  // first seq), so an approved step cannot be told from a refused one. Failing closed, every permission
-  // request first seen pending counts toward the limit, and only the owner continuing the task
-  // restarts the count. One first seen decided was answered before this pass, or allowed by full
-  // access without a person, so it is not counted.
-  if (event.kind === 'approval' && event.state === 'pending' && event.category === 'permission') {
-    const refusals = task.refusals + 1
-    tx.store.putTask({ ...task, refusals })
-    if (refusals >= tx.limits.refusalLimit) transit(tx, taskId, 'refusedThrice')
-    else waitForApproval(tx, getTask(tx, taskId), event.seq)
+  // A permission request first seen pending only tells the owner the task waits. Its end arrives as
+  // an approvalOutcome: only the owner's own refusal counts toward the limit and only the owner's
+  // allow ends the streak. Expiry, full access and every automatic answer neither count nor reset.
+  if (event.kind === 'approval' && event.state === 'pending' && event.category === 'permission') waitForApproval(tx, task, event.seq)
+  if (event.kind === 'approvalOutcome' && event.via === 'person') {
+    const current = getTask(tx, taskId)
+    // A task already paused by this pass ignores what the same page still holds.
+    if (current.state !== 'running' && current.state !== 'waiting') return
+    if (event.outcome === 'allowed' && current.refusals) tx.store.putTask({ ...current, refusals: 0 })
+    if (event.outcome === 'rejected') {
+      const refusals = current.refusals + 1
+      tx.store.putTask({ ...current, refusals })
+      if (refusals >= tx.limits.refusalLimit) transit(tx, taskId, 'refusedThrice')
+    }
   }
   if (event.kind !== 'turn' || event.status === 'running' || event.status === 'waiting') return
   if (event.status === 'failed') return void transit(tx, taskId, 'sessionFailed')

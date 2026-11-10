@@ -201,6 +201,20 @@ export function fakeSessions(
         ...(toolName ? { toolName } : {}),
       })
     },
+    /**
+     * How an approval ended, at its own seq after the approval event, as the platform reports it:
+     * the waiting flag clears when someone decided. `approvalSeq` defaults to the latest approval.
+     */
+    outcome(
+      sessionId: string,
+      event: { outcome: 'allowed' | 'rejected' | 'expired'; via: 'person' | 'full-access' | 'automatic'; approvalSeq?: number },
+    ) {
+      const session = get(sessionId)
+      const approvalSeq =
+        event.approvalSeq ?? [...session.events].reverse().find((e) => e.kind === 'approval')?.seq ?? 0
+      session.status = { kind: 'active', flags: [] }
+      push(session, { kind: 'approvalOutcome', approvalSeq, outcome: event.outcome, via: event.via })
+    },
     finish(sessionId: string, outcome: TurnEnd, text?: string) {
       finish(get(sessionId), outcome, text)
     },

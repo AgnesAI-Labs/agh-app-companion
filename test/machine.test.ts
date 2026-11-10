@@ -164,39 +164,71 @@ describe('state table (spec §4.3), one test per row', () => {
     expect(h.sessions.sessions.get(sid)!.keys.size).toBe(1)
   })
 
-  // The platform reports no verdict, so every permission request first seen pending counts (reconcile.mjs, failing closed).
-  it.each(['running', 'waiting'] as const)('%s, three permission requests in a row: paused (refused), told once', async (from) => {
+  const ask = (r: { h: ReturnType<typeof harness>; sid: string }, outcome: 'allowed' | 'rejected' | 'expired', via: 'person' | 'full-access' | 'automatic') => {
+    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
+    r.h.sessions.outcome(r.sid, { outcome, via })
+  }
+
+  // Only the owner's own refusal counts: approvalOutcome with via person and outcome rejected (reconcile.mjs).
+  it.each(['running', 'waiting'] as const)('%s, three refusals by the owner in a row: paused (refused), told once', async (from) => {
     const r = from === 'running' ? await running() : await waiting()
-    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
+    ask(r, 'rejected', 'person')
     await r.h.tick()
-    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
+    ask(r, 'rejected', 'person')
     await r.h.tick()
-    expect(r.h.task(r.id).state).not.toBe('paused')
-    r.h.sessions.emit(r.sid, { kind: 'approval', state: 'pending' })
+    expect(r.h.task(r.id)).toMatchObject({ state: 'running', refusals: 2 })
+    ask(r, 'rejected', 'person')
     await r.h.tick()
     expect(r.h.task(r.id)).toMatchObject({ state: 'paused', reason: 'refused' })
     await r.h.tick()
     expect(r.h.channel.texts().filter((t) => t.includes(r.id) && t.includes('已暂停'))).toEqual([`${r.id}（api）修一下登录页的报错：已暂停（审批多次未见批准）`])
   })
 
-  it('approvals first seen decided, questions and expired approvals do not count; continuing restarts the count', async () => {
-    const { h, id, sid } = await running()
-    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'decided' })
+  it('refusals not given by the owner, allowed or open requests and questions do not count; an owner allow ends the streak; continuing restarts the count', async () => {
+    const r = await running()
+    const { h, id, sid } = r
+    for (let n = 0; n < 3; n++) ask(r, 'rejected', 'automatic')
+    for (let n = 0; n < 3; n++) ask(r, 'rejected', 'full-access')
+    for (let n = 0; n < 3; n++) ask(r, 'expired', 'automatic')
+    for (let n = 0; n < 3; n++) ask(r, 'allowed', 'full-access')
     for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'pending', category: 'question' })
+    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'decided' })
     h.sessions.set(sid, { kind: 'active', flags: [] })
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
-    expect(h.channel.texts().filter((t) => t.includes(TEXT.approvalWaiting))).toEqual([])
-    h.sessions.emit(sid, { kind: 'approval', state: 'expired' })
+    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'pending' })
+    h.sessions.set(sid, { kind: 'active', flags: [] })
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
-    for (let n = 0; n < 3; n++) h.sessions.emit(sid, { kind: 'approval', state: 'pending' })
+    ask(r, 'rejected', 'person')
+    ask(r, 'rejected', 'person')
+    ask(r, 'allowed', 'person')
+    ask(r, 'rejected', 'person')
+    ask(r, 'rejected', 'person')
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'running', refusals: 2 })
+    ask(r, 'rejected', 'person')
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'refused' })
     h.sessions.set(sid, { kind: 'idle', flags: [] })
     await button(h, 'continue', id)
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
+  })
+
+  it('a restart neither counts an owner refusal again nor misses one that arrived while it was down', async () => {
+    const r = await running()
+    ask(r, 'rejected', 'person')
+    ask(r, 'rejected', 'person')
+    await r.h.tick()
+    r.h.restart()
+    await r.h.tick()
+    await r.h.tick()
+    expect(r.h.task(r.id)).toMatchObject({ state: 'running', refusals: 2 })
+    ask(r, 'rejected', 'person')
+    r.h.restart()
+    await r.h.tick()
+    expect(r.h.task(r.id)).toMatchObject({ state: 'paused', reason: 'refused', refusals: 3 })
   })
 
   it('running, session asks for an approval: waiting, and the owner is told once to approve on the computer', async () => {

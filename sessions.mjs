@@ -19,10 +19,13 @@
  * @typedef {{ kind: 'text', seq: number, text: string }
  *   | { kind: 'tool', seq: number, name: string, status: string, resultSeq?: number }
  *   | { kind: 'approval', seq: number, state: 'pending' | 'decided' | 'expired', category: 'permission' | 'question', summary: string, toolName?: string }
+ *   | { kind: 'approvalOutcome', seq: number, approvalSeq: number, outcome: 'allowed' | 'rejected' | 'expired', via: 'person' | 'full-access' | 'automatic' }
  *   | { kind: 'turn', seq: number, turn: number, status: 'running' | 'waiting' | TurnEnd, reason?: string }} SessionEvent
  *   A turn is reported at its start and again, with a later seq, at its end. An approval or tool is
  *   reported once, at the seq it was created with: a later change of its state is not seen after
- *   `afterSeq`, and an approval carries no verdict (reconcile.mjs counts approvals, failing closed).
+ *   `afterSeq`. An approval's end comes as an `approvalOutcome` at the seq that ended it, so a reader
+ *   paging with `afterSeq` gets each one once; `via: 'person'` is the owner's own answer on an owner
+ *   surface and everything unsure is `automatic` (reconcile.mjs counts only person refusals).
  * @typedef {{ sessionId: string, startKey: string, bundle: string, workspace: string, retention: Retention, archived: boolean, status: SessionStatus }} SessionRow
  * @typedef {{ turn: { status: TurnEnd, reason?: string } | null, text: string | null }} SessionResult
  * @typedef {{ inputTokens: number | null, outputTokens: number | null, cost: { amount: number, currency: string } | null }} SessionUsage
