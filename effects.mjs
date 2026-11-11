@@ -1,5 +1,5 @@
 import { SLOT_STATES } from './machine.mjs'
-import { SessionRefusal } from './platform-sessions.mjs'
+import { SessionRefusal, START_ATTEMPTS } from './platform-sessions.mjs'
 import { startRequest } from './sessions.mjs'
 import { enqueueMessage, getTask, parkRefused, TEXT, transit } from './tasks.mjs'
 
@@ -69,7 +69,14 @@ export async function runSessionOps(deps) {
         ))
       } catch (error) {
         blocked.add(op.taskId)
-        if (error instanceof SessionRefusal && !error.retryable) park(deps, op.taskId, error, workspace, key)
+        if (error instanceof SessionRefusal) {
+          if (!error.retryable) park(deps, op.taskId, error, workspace, key)
+          continue
+        }
+        // The count lives on the op, so it survives a restart and ends with the generation's op.
+        const failures = (op.failures ?? 0) + 1
+        if (failures >= START_ATTEMPTS) park(deps, op.taskId, new SessionRefusal('START_FAILED', shortError(error)), workspace, key)
+        else deps.tx().store.set(key, { ...op, failures })
         continue
       }
       const done = deps.tx()
@@ -107,6 +114,12 @@ export async function runSessionOps(deps) {
       }
     })
   }
+}
+
+/** First line of an unknown start error, short enough for an owner notice. @param {unknown} error */
+function shortError(error) {
+  const line = (error instanceof Error ? error.message : String(error)).split('\n', 1)[0]?.trim() ?? ''
+  return line ? ([...line].length > 120 ? `${[...line].slice(0, 120).join('')}…` : line) : null
 }
 
 /**

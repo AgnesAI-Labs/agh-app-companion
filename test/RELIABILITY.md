@@ -19,6 +19,10 @@ To check the table mechanically: every `test/...` file and test name in the tabl
 | test/recovery.test.ts | during the effects, after the call and before its mark: replay by key does not repeat it | start and channel delivery replayed by key: no second session, no second message |
 | test/reliability.test.ts | a task parked by a platform refusal stays parked and silent across restarts | restart does not retry a refused start and does not repeat the owner notice |
 | test/refusals.test.ts | %s on a worker start: the task parks and the owner gets exactly one message | every non-retryable refusal code (WORKSPACE_NOT_AUTHORIZED, FULL_ACCESS_UNAVAILABLE, MODEL_ROUTE_MISSING, AUTO_REVIEW, BUNDLE_UNAVAILABLE, ...) parks the task as paused (platform), one owner message, no op left |
+| test/refusals.test.ts | parks the task after three failed starts, across restarts, and tells the owner once | **fix**: an error that is not a platform refusal used to be retried on every pass, forever and silently; the count lives on the start op, so a restart keeps it |
+| test/refusals.test.ts | a start that works after two failures keeps the task running and leaves no op | a success ends the count |
+| test/refusals.test.ts | a new generation after continue gets three fresh attempts | continue opens a new op with a new count |
+| test/refusals.test.ts | does not count a busy start | SESSION_BUSY stays an unlimited, silent wait |
 | test/refusals.test.ts | a busy start is retried with the same key and tells the owner nothing | SESSION_BUSY: same startKey, no notice, task runs |
 | test/refusals.test.ts | an unauthorized workspace is told once; a task queued behind it gets only its own pause notice | one notice per workspace episode, refusal record lists both tasks |
 | test/refusals.test.ts | full access refused in two workspaces is one message | platform-scope refusal told once |
@@ -66,6 +70,9 @@ To check the table mechanically: every `test/...` file and test name in the tabl
 | test/machine.test.ts | a restart neither counts an owner refusal again nor misses one that arrived while it was down | restart does not double-count or miss events |
 | test/machine.test.ts | running, session asks for an approval: waiting, and the owner is told once to approve on the computer | one approval notice across passes and a restart |
 | test/machine.test.ts | running, session completes: done, and the owner gets the result | completion read and reported |
+| test/machine.test.ts | running, session completes without a PR: paused (pr failed) with the reason, never done; continue asks for the publish again | **fix**: a publish that ended in `pr-failed` used to let the turn end as done with no PR link; now paused, one notice that carries the reason, and continue asks for the publish again (still approval-gated) |
+| test/machine.test.ts | a pr-failed result read in an earlier pass still pauses the task when the turn ends after a restart | the failure is kept on the task |
+| test/machine.test.ts | a later publish that opens the PR in the same turn ends done | a later success clears it |
 | test/machine.test.ts | running, session fails: failed | failure observed |
 | test/machine.test.ts | %s, session missing on reconcile: paused (session lost) | a session that vanished from `list()` pauses the task |
 

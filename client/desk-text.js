@@ -22,6 +22,7 @@ export const REASON = {
   turnInterrupted: '回合中断',
   refused: '审批多次未见批准',
   platform: '平台拒绝',
+  prFailed: '没开成 PR',
 }
 export const ENDED = ['done', 'failed', 'abandoned']
 
@@ -172,6 +173,8 @@ export function pausedWhy(task, usage) {
       return `这个任务派生的步数超过 ${caps.maxHops ?? 8}，先停下。`
     case 'platform':
       return '平台拒绝了这个任务的会话请求，原因见页面上方的状态。继续会再试一次。'
+    case 'prFailed':
+      return '分支已推送，但没开成 PR，所以不算完成。点继续会让它再调用 publish 重试，到时要你重新批。'
     default:
       return '已暂停。'
   }

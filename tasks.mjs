@@ -17,7 +17,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   id: string, title: string, brief: string, briefHash: string, workspace: string,
  *   state: TaskState, reason: StateReason | null, origin: { kind: 'owner', inbox: string[] }, hops: number,
  *   sessionId: string | null, generation: number, cursor: number, resumed: number, refusals: number,
- *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, repo: string | null, publishCalls: number[],
+ *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, repo: string | null, publishCalls: number[], prFailed: string | null,
  *   attach: AttachMark | null,
  *   eventSeq: number, createdAt: string, updatedAt: string, endedAt: string | null, eventChunks: number,
  *   compacted: { events: number, firstAt: string | null, lastAt: string | null } | null,
@@ -25,7 +25,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  * @typedef {{ tokens: number | null, cost: number | null }} Usage  null = not known, never 0; reading = current session's last report;
  *   budgetBase = usage when the owner last continued a budget pause, so the task cap counts from there
  * @typedef {{ seq: number, taskId: string } & (
- *   { kind: 'start', generation: number, input: string }
+ *   { kind: 'start', generation: number, input: string, failures?: number }
  *   | { kind: 'send', input: string, key: string, inbox: string | null, busyNoticed: boolean }
  *   | { kind: 'interrupt' })} SessionOp
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
@@ -51,6 +51,7 @@ export const TEXT = Object.freeze({
   attach: '先判断这条和本任务有没有关系，无关就只回一行“退回：原因”，不要动手。',
   resume: '上一回合中断了，请从中断处继续。',
   continue: '主人让你继续。',
+  continuePr: '主人让你继续：分支已推送但 PR 没开成。请再调用 publish 重试，它会复用已推送的分支。',
 })
 
 const REASON_TEXT = {
@@ -62,6 +63,7 @@ const REASON_TEXT = {
   turnInterrupted: '回合中断',
   refused: '审批多次未见批准',
   platform: '平台拒绝',
+  prFailed: '没开成 PR',
 }
 const STATE_TEXT = {
   proposed: '提议中', queued: '排队中', running: '进行中', waiting: '等你', done: '完成',
@@ -162,6 +164,7 @@ export function transit(tx, taskId, event, detail = {}) {
     reason = null
   }
   const hadSession = task.sessionId !== null && SLOT_STATES.includes(from)
+  const failedPr = task.reason === 'prFailed'
   const lost = task.reason === 'sessionLost' || (task.reason === 'platform' && task.sessionId === null)
   switch (row.effect) {
     case 'resume':
@@ -179,6 +182,7 @@ export function transit(tx, taskId, event, detail = {}) {
         task.sessionId = null
         task.cursor = 0
         task.publishCalls = []
+        task.prFailed = null
         enqueueOp(tx, { taskId, kind: 'start', generation: task.generation, input: workerInput(task) })
       }
       break
@@ -200,7 +204,7 @@ export function transit(tx, taskId, event, detail = {}) {
   task.endedAt = ENDED.has(to) ? (from === to ? task.endedAt : tx.at) : null
   const seq = record(tx, task, 'state', { event, from, to, reason, ...(detail.note ? { note: detail.note } : {}) })
   if (row.effect === 'continue' && !lost)
-    enqueueOp(tx, { taskId, kind: 'send', input: TEXT.continue, key: `${taskId}:${seq}`, inbox: null, busyNoticed: false })
+    enqueueOp(tx, { taskId, kind: 'send', input: failedPr ? TEXT.continuePr : TEXT.continue, key: `${taskId}:${seq}`, inbox: null, busyNoticed: false })
   if (from !== to && NOTIFY.has(to) && !detail.quiet)
     enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.note ? { detail: detail.note } : {}), taskIds: [taskId] })
   if (SLOT_STATES.includes(from) && !SLOT_STATES.includes(to)) admit(tx, task.workspace)
@@ -270,7 +274,7 @@ export function createTask(tx, { title, workspace, inbox, brief, hops }) {
     id, title, brief, briefHash: hash(brief), workspace, state: 'queued', reason: null,
     origin: { kind: 'owner', inbox }, hops,
     sessionId: null, generation: 0, cursor: 0, resumed: 0, refusals: 0,
-    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, repo: null, publishCalls: [], attach: null, eventSeq: 0,
+    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, repo: null, publishCalls: [], prFailed: null, attach: null, eventSeq: 0,
     createdAt: tx.at, updatedAt: tx.at, endedAt: null, compacted: null,
   }
   tx.store.createTask(task)

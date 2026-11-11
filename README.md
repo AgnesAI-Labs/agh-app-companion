@@ -30,9 +30,10 @@ and the chat channel adapter.
 ## Install and use
 
 These steps come from the real-daemon run in an isolated home (see "Prove it on a real daemon"
-below). They need an Agnes Harness build with plugin-managed sessions
-([agnes-harness#633](https://github.com/AgnesAI-Labs/agnes-harness/pull/633), not merged yet) and a
-working model route.
+below). They need an Agnes Harness build with plugin-managed sessions (agnes-harness `develop` at
+`e30254dd9` or later, which contains
+[agnes-harness#633](https://github.com/AgnesAI-Labs/agnes-harness/pull/633)) and a working model
+route.
 
 1. Install from a checkout of this repository:
 
@@ -68,8 +69,19 @@ working model route.
 5. Approvals. When the worker calls `publish`, the task shows as waiting on the desk. Its link opens
    the worker session, where the approval card offers "Allowed once" and "Reject". After you allow
    it, the branch is pushed to `origin`. Opening the pull request uses `gh` and fails without network
-   or forge credentials; the branch stays pushed and the tool reports `pr-failed`. Three rejections
-   from a person pause the task. Approvals decided by the full-access policy do not count.
+   or forge credentials; the branch stays pushed and the tool reports `pr-failed`. A task never ends
+   as done without a PR link: it pauses as 已暂停（没开成 PR）, and the notice carries the reason. 继续
+   asks the worker to run `publish` again, which waits for your approval like the first time. Three
+   rejections from a person pause the task. Approvals decided by the full-access policy do not
+   count.
+
+### Pauses without an approval
+
+- A worker session that cannot be started for a reason the platform names (a folder not granted,
+  full access unavailable, and so on) pauses the task once, with a notice that says what to fix.
+- A start that fails with any other error is tried again, and the third failed attempt parks the
+  task as 已暂停（平台拒绝）. The notice carries the short error. The count is kept with the pending
+  start, so a restart does not reset it. 继续 opens a new session with a fresh count.
 
 ## Not working yet
 
@@ -77,7 +89,6 @@ working model route.
   channel and replies stay pending in the store.
 - Card approval: a chat card cannot answer an approval, and `start` takes no channel binding.
   Approvals are answered in the Web session only.
-- A start error that is not a platform refusal is retried on every pass without telling the owner.
 - Model routes: the platform needs a route and a model name; the settings hold only a route, so a set
   route is reported in `status()` instead of being replaced by the default.
 
@@ -118,7 +129,7 @@ AGNES_HARNESS=<agnes-harness checkout> node scripts/e2e/run.mjs
 The first run builds a runtime into `<checkout>/.agnes-tmp/companion-e2e/runtime` (`--runtime <dir>`
 uses another build). Each step prints `PASS` or `FAIL` and saves evidence (JSON, CLI transcripts,
 screenshots) under `<checkout>/.agnes-tmp/companion-e2e/evidence/<run>`. The script exits non-zero
-when a step fails. Against agnes-harness#633 at `653cd4aa7` all ten steps pass. `--keep` leaves the
+when a step fails. Against agnes-harness `develop` at `e30254dd9` all ten steps pass, including step 7's check that the demo task ends paused for 没开成 PR, because the `gh` stub refuses. `--keep` leaves the
 home in place, `--hold-after N` stops after step N and keeps the daemon up, and `--cleanup <root>`
 ends a held run. Playwright and Chrome come from the checkout.
 

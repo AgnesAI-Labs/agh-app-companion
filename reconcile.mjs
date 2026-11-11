@@ -1,5 +1,5 @@
 import { SLOT_STATES } from './machine.mjs'
-import { PUBLISH_TOOL_NAME, publishedPullRequest } from './publish.mjs'
+import { PUBLISH_TOOL_NAME, publishedPullRequest, pullRequestFailure } from './publish.mjs'
 import { handbackReason } from './signals.mjs'
 import { allTasks, choiceCard, dispose, enqueueMessage, getTask, label, TEXT, transit } from './tasks.mjs'
 import { recentConversation } from './context.mjs'
@@ -47,23 +47,31 @@ const MAX_OPEN_PUBLISHES = 8
 /**
  * A tool call is reported once, at its own seq, so the calls of `publish` that have no result yet are
  * kept on the task and asked for again each pass (`toolResult`, `pending` until the call ends). A done
- * result that names a pull request gives `prUrl` and `repo` together; any other done result, and a
- * call left pending when the turn has ended, is dropped. The caller commits these with the cursor.
+ * result that names a pull request gives `prUrl` and `repo` together and clears `prFailed`; one that
+ * says the branch is pushed but no pull request opened sets `prFailed` to the reason. Any other done
+ * result, and a call left pending when the turn has ended, is dropped. The caller commits these with
+ * the cursor.
  * @param {import('./sessions.mjs').ManagedSessions} sessions @param {import('./tasks.mjs').Task} task
  * @param {readonly import('./sessions.mjs').SessionEvent[]} events @param {boolean} turnClosed
- * @returns {{ publishCalls: number[], prUrl?: string, repo?: string }}
+ * @returns {{ publishCalls: number[], prUrl?: string, repo?: string, prFailed?: string | null }}
  */
 async function readPublishes(sessions, task, events, turnClosed) {
   const seen = events.filter((e) => e.kind === 'tool' && e.name === PUBLISH_TOOL_NAME).map((e) => e.seq)
   const calls = [...new Set([...(task.publishCalls ?? []), ...seen])].sort((a, b) => a - b)
   /** @type {number[]} */
   const open = []
-  /** @type {{ prUrl: string, repo: string } | undefined} */
+  /** @type {{ prUrl: string, repo: string, prFailed: null } | { prFailed: string } | undefined} */
   let found
   for (const seq of calls) {
     const result = await sessions.toolResult(/** @type {string} */ (task.sessionId), seq).catch(() => undefined)
-    if (result?.state === 'done') found = (!result.isError && publishedPullRequest(result.text)) || found
-    else open.push(seq)
+    if (result?.state !== 'done') {
+      open.push(seq)
+      continue
+    }
+    const opened = !result.isError && publishedPullRequest(result.text)
+    const failure = result.isError ? pullRequestFailure(result.text) : undefined
+    if (opened) found = { ...opened, prFailed: null }
+    else if (failure) found = { prFailed: failure }
   }
   return { publishCalls: turnClosed ? [] : open.slice(-MAX_OPEN_PUBLISHES), ...found }
 }
@@ -129,6 +137,7 @@ function apply(tx, taskId, event, reply) {
   const reason = task.attach?.sent ? handbackReason(reply) : undefined
   if (reason !== undefined) return handback(tx, task, reason)
   if (task.attach?.sent) tx.store.putTask({ ...task, attach: null })
+  if (task.prFailed) return void transit(tx, taskId, 'prFailed', { note: task.prFailed })
   transit(tx, taskId, 'sessionCompleted', { note: reply.slice(0, 500) })
 }
 

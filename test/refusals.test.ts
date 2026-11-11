@@ -30,6 +30,79 @@ describe('platform refusals', () => {
     },
   )
 
+  describe('an error that is not a platform refusal', () => {
+    const attempts = { n: 0 }
+    const failing = (h: ReturnType<typeof harness>, fails: () => boolean) => {
+      attempts.n = 0
+      const start = h.sessions.port.start
+      h.sessions.port.start = async (request) => {
+        if (request.bundle === ROLES.worker.bundle) attempts.n++
+        if (request.bundle === ROLES.worker.bundle && fails()) throw new Error('socket hang up\n  at somewhere')
+        return start(request)
+      }
+    }
+
+    it('parks the task after three failed starts, across restarts, and tells the owner once', async () => {
+      const h = harness()
+      let broken = true
+      failing(h, () => broken)
+      const id = await h.create('修登录')
+      expect(attempts.n).toBe(2)
+      expect(h.task(id).state).toBe('running')
+      h.restart()
+      await h.tick()
+      expect(attempts.n).toBe(3)
+      expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'platform' })
+      for (let n = 0; n < 3; n++) await h.tick()
+      expect(attempts.n).toBe(3)
+      expect(h.store.scan('op/')).toEqual([])
+      const told = h.channel.texts().filter((t) => t.includes('socket hang up'))
+      expect(told).toHaveLength(1)
+      expect(told[0]).not.toContain('somewhere')
+      broken = false
+      await h.say(`继续 ${id}`)
+      await h.tick()
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'running', generation: 1 })
+      expect(h.workers()).toHaveLength(1)
+    })
+
+    it('a start that works after two failures keeps the task running and leaves no op', async () => {
+      const h = harness()
+      let failures = 2
+      failing(h, () => failures-- > 0)
+      const id = await h.create('修登录')
+      await h.tick()
+      expect(h.task(id).state).toBe('running')
+      expect(h.workers()).toHaveLength(1)
+      expect(h.task(id).sessionId).not.toBeNull()
+      expect(h.store.scan('op/')).toEqual([])
+    })
+
+    it('a new generation after continue gets three fresh attempts', async () => {
+      const h = harness()
+      failing(h, () => true)
+      const id = await h.create('修登录')
+      await h.tick()
+      expect(h.task(id).state).toBe('paused')
+      await h.say(`继续 ${id}`)
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'running', generation: 1 })
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'paused', generation: 1 })
+      expect(attempts.n).toBe(6)
+    })
+
+    it('does not count a busy start', async () => {
+      const h = harness()
+      h.sessions.gate(worker('SESSION_BUSY'))
+      const id = await h.create('修登录')
+      for (let n = 0; n < 5; n++) await h.tick()
+      expect(h.task(id).state).toBe('running')
+      expect(h.sessions.calls.start).toBeGreaterThan(3)
+    })
+  })
+
   it('a busy start is retried with the same key and tells the owner nothing', async () => {
     const h = harness()
     h.sessions.gate(worker('SESSION_BUSY'))
