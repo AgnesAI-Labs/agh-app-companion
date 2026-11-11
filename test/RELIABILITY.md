@@ -66,6 +66,9 @@ To check the table mechanically: every `test/...` file and test name in the tabl
 | test/machine.test.ts | a restart neither counts an owner refusal again nor misses one that arrived while it was down | restart does not double-count or miss events |
 | test/machine.test.ts | running, session asks for an approval: waiting, and the owner is told once to approve on the computer | one approval notice across passes and a restart |
 | test/machine.test.ts | running, session completes: done, and the owner gets the result | completion read and reported |
+| test/machine.test.ts | running, session completes without a PR: paused (pr failed) with the reason, never done; continue asks for the publish again | **fix**: a publish that ended in `pr-failed` used to let the turn end as done with no PR link; now paused, one notice that carries the reason, and continue asks for the publish again (still approval-gated) |
+| test/machine.test.ts | a pr-failed result read in an earlier pass still pauses the task when the turn ends after a restart | the failure is kept on the task |
+| test/machine.test.ts | a later publish that opens the PR in the same turn ends done | a later success clears it |
 | test/machine.test.ts | running, session fails: failed | failure observed |
 | test/machine.test.ts | %s, session missing on reconcile: paused (session lost) | a session that vanished from `list()` pauses the task |
 

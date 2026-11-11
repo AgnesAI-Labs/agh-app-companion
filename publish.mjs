@@ -780,6 +780,25 @@ export function publishedPullRequest(text) {
   return repo && isPullOf(prUrl, repo) ? { prUrl, repo } : undefined
 }
 
+/**
+ * Why a finished `publish` call pushed the branch but opened no pull request, or undefined when its
+ * result is anything else.
+ * @param {string} text
+ * @returns {string | undefined}
+ */
+export function pullRequestFailure(text) {
+  /** @type {unknown} */
+  let result
+  try {
+    result = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const { status, reason, detail } = /** @type {{ status?: unknown, reason?: unknown, detail?: unknown }} */ (result && typeof result === 'object' ? result : {})
+  if (status !== 'refused' || reason !== 'pr-failed') return undefined
+  return typeof detail === 'string' && detail ? detail : 'pr-failed'
+}
+
 /** @param {string} text */
 function tail(text) {
   const clean = withoutCredentials(text).trim()

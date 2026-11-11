@@ -465,6 +465,7 @@ async function main() {
       save('07-approval-nodes.json', decided)
       r.notes.push(`approval nodes ${JSON.stringify(decided)}`)
       check(branches.includes(`companion/${demoTask.id.toLowerCase()}`), 'the branch did not reach the bare remote')
+      check(done.state === 'paused' && done.reason === 'prFailed', `${demoTask.id} ended ${done.state}/${done.reason}, not paused for prFailed (the gh stub refuses, so no PR can exist)`)
       check(decided.some((d) => d.decision?.via === 'human'), 'no approval decided by a human')
     }, [5])
 

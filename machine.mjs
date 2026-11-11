@@ -3,10 +3,10 @@
  * in the companion design §4.3 in order; the last three rows are the additions named beside them.
  *
  * @typedef {'proposed' | 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'paused' | 'abandoned' | 'expired'} TaskState
- * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused' | 'platform'} StateReason
+ * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused' | 'platform' | 'prFailed'} StateReason
  * @typedef {'ownerConfirm' | 'ownerRefuse' | 'proposalExpired' | 'sessionWaiting' | 'ownerAnswered' | 'approvalExpired'
  *   | 'sessionCompleted' | 'sessionFailed' | 'overBudget' | 'overHops' | 'sessionLost' | 'turnInterrupted'
- *   | 'refusedThrice' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
+ *   | 'refusedThrice' | 'prFailed' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
  * @typedef {'resume' | 'continue' | 'reopen' | 'interrupt' | 'endedReply' | 'restore'} RowEffect
  * @typedef {{
  *   from: readonly TaskState[], on: TaskEventName, to: TaskState | 'same' | 'prior',
@@ -27,6 +27,7 @@ export const TRANSITIONS = Object.freeze([
   { from: ['running'], on: 'sessionWaiting', to: 'waiting' },
   { from: ['waiting'], on: 'ownerAnswered', to: 'running' },
   { from: ['waiting'], on: 'approvalExpired', to: 'failed', reason: 'approvalExpired' },
+  { from: ['running'], on: 'prFailed', to: 'paused', reason: 'prFailed' },
   { from: ['running'], on: 'sessionCompleted', to: 'done' },
   { from: ['running'], on: 'sessionFailed', to: 'failed', reason: 'sessionFailed' },
   { from: ACTIVE, on: 'overBudget', to: 'paused', reason: 'budget', effect: 'interrupt' },

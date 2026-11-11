@@ -46,7 +46,7 @@ const button = (h: ReturnType<typeof harness>, action: string, taskId: string) =
 
 describe('state table (spec §4.3), one test per row', () => {
   it('has a row for every spec row plus the queue and return rows', () => {
-    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(21)
+    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(22)
   })
 
   it('proposed, owner confirms: running, and its session starts', async () => {
@@ -114,6 +114,59 @@ describe('state table (spec §4.3), one test per row', () => {
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'done', reason: null })
     expect([...h.channel.delivered.values()].some((m) => m.text.includes(id) && m.text.includes('完成') && m.detail === '改好了，测试通过')).toBe(true)
+  })
+
+  describe('publish ends in pr-failed', () => {
+    const PR = 'https://git.example.test/org/api/pull/12'
+    const prFailed = JSON.stringify({
+      status: 'refused',
+      reason: 'pr-failed',
+      detail: 'the branch is pushed; opening the pull request failed: gh: not logged in',
+      branch: 'companion/x',
+      commit: 'abc',
+    })
+    const published = JSON.stringify({ status: 'published', prUrl: PR, branch: 'companion/x', commit: 'abc', remote: 'r', files: ['a'] })
+
+    it('running, session completes without a PR: paused (pr failed) with the reason, never done; continue asks for the publish again', async () => {
+      const { h, id, sid } = await running()
+      h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), prFailed, true)
+      h.sessions.finish(sid, 'completed', '分支已推送，PR 没开成')
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'prFailed', prUrl: null })
+      const told = [...h.channel.delivered.values()].filter((m) => m.text.includes(id) && m.text.includes('没开成 PR'))
+      expect(told).toHaveLength(1)
+      expect(told[0]!.detail).toContain('gh: not logged in')
+      await h.tick()
+      expect([...h.channel.delivered.values()].filter((m) => m.text.includes('没开成 PR'))).toHaveLength(1)
+      await button(h, 'continue', id)
+      await h.tick()
+      expect(h.task(id).state).toBe('running')
+      expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe(TEXT.continuePr)
+      h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), published)
+      h.sessions.finish(sid, 'completed', 'PR 开好了')
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'done', prUrl: PR })
+    })
+
+    it('a pr-failed result read in an earlier pass still pauses the task when the turn ends after a restart', async () => {
+      const { h, id, sid } = await running()
+      h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), prFailed, true)
+      await h.tick()
+      expect(h.task(id).state).toBe('running')
+      h.restart()
+      h.sessions.finish(sid, 'completed', '分支已推送，PR 没开成')
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'prFailed' })
+    })
+
+    it('a later publish that opens the PR in the same turn ends done', async () => {
+      const { h, id, sid } = await running()
+      h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), prFailed, true)
+      h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), published)
+      h.sessions.finish(sid, 'completed', 'PR 开好了')
+      await h.tick()
+      expect(h.task(id)).toMatchObject({ state: 'done', prUrl: PR })
+    })
   })
 
   it('running, session fails: failed', async () => {
