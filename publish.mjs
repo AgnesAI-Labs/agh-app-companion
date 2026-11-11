@@ -708,14 +708,18 @@ export function publishTool({ prs = ghPullRequests() } = {}) {
 }
 
 // Workspace files are written by the worker session; nothing in them may run here with the owner's
-// credentials. Hooks and fsmonitor are the programs git would start on its own. Set in the
-// environment, the override also reaches the git that gh starts.
+// credentials. Hooks and fsmonitor are the programs git would start on its own, and a bare-repository
+// layout (HEAD, config, objects, refs) the worker writes at the root would be read as a repository, so
+// only an explicit --git-dir or a .git entry names one. Set in the environment, the override also
+// reaches the git that gh starts.
 const GIT_SAFETY_ENV = {
-  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_COUNT: '3',
   GIT_CONFIG_KEY_0: 'core.hooksPath',
   GIT_CONFIG_VALUE_0: '/dev/null',
   GIT_CONFIG_KEY_1: 'core.fsmonitor',
   GIT_CONFIG_VALUE_1: 'false',
+  GIT_CONFIG_KEY_2: 'safe.bareRepository',
+  GIT_CONFIG_VALUE_2: 'explicit',
 }
 export const NETWORK_MS = 120_000
 const MAX_OUTPUT = 1 << 20

@@ -206,6 +206,20 @@ describe('github_read', () => {
     expect(t.calls()).toEqual([])
   })
 
+  it('refuses a bare-repository layout in the workspace: its config is never read', async () => {
+    const t = setup()
+    const bare = join(t.dir, 'bare')
+    mkdirSync(join(bare, 'objects'), { recursive: true })
+    mkdirSync(join(bare, 'refs'))
+    writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n')
+    writeFileSync(
+      join(bare, 'config'),
+      `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ${bare}\n[remote "origin"]\n\turl = https://github.com/example-org/example-repo.git\n`,
+    )
+    expect(structured(await t.call({ action: 'pr_list' }, bare))).toMatchObject({ status: 'refused', reason: 'not-a-git-repo' })
+    expect(t.calls()).toEqual([])
+  })
+
   it('refuses a repository without a usable origin', async () => {
     const none = setup({ url: '' })
     expect(structured(await none.call({ action: 'pr_list' }))).toMatchObject({ status: 'refused', reason: 'no-remote' })

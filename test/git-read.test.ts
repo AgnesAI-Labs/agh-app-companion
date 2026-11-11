@@ -390,6 +390,18 @@ describe('git_read', () => {
     })
   })
 
+  describe('a bare-repository layout written into the workspace', () => {
+    it('is not a repository: its config is never read', async () => {
+      const t = setup()
+      const bare = join(t.dir, 'bare')
+      mkdirSync(join(bare, 'objects'), { recursive: true })
+      mkdirSync(join(bare, 'refs'))
+      writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n')
+      writeFileSync(join(bare, 'config'), `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ${bare}\n`)
+      expect(await t.read({ action: 'status' }, bare)).toMatchObject({ status: 'refused', reason: 'not-a-git-repo' })
+    })
+  })
+
   describe('what git is never allowed to run', () => {
     it('does not start an external diff or textconv program from the repository config', async () => {
       const t = setup()
