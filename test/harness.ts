@@ -16,7 +16,6 @@ export const SETTINGS = {
     { shortName: 'web', path: '/w/web' },
   ],
   dedicatedWorkspace: '/w/companion',
-  channelInstance: 'im-1',
 }
 
 export type Item = { id: string; origin: 'owner' | 'material'; text: string; chosenNew?: true }

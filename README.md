@@ -5,7 +5,7 @@ as publishing a branch, then gets results back. The goal is to do this from a ph
 works from the local Web task desk only (see "Not working yet"). This repository holds the package
 metadata, the application, the `judge` and `worker` Bundles, the managed task engine with its
 versioned store and its wiring to the platform, the settings page and task desk, the `publish` tool,
-and the chat channel adapter.
+and the chat channel adapter over the platform's channel targets.
 
 ## Layout
 
@@ -21,10 +21,11 @@ and the chat channel adapter.
 - `sessions.mjs` describes the managed sessions port in the platform's shapes and how each role's
   session is opened; `platform-sessions.mjs` adapts the platform's port and maps each refusal code to
   retry or park, with the one owner notice per refusal.
-- `channel-contract.mjs` holds the chat channel shapes the companion assumes, with the open
-  assumptions about the draft channel contract listed at its top; `channel.mjs` adapts a channel
-  instance to the engine (owner-only inbound, reply mapping, send-once delivery). Tested against
-  `test/fake-gateway.ts` only.
+- `channel-contract.mjs` holds the chat channel shapes the companion assumes, with the assumptions
+  about the platform's channel targets listed at its top; `channel-targets.mjs` is the one module
+  that adapts `init.channels` to the companion's gateway port; `channel.mjs` adapts the pairing to
+  the engine (owner-only inbound, reply mapping, text rendering cut to the platform's limit,
+  send-once delivery). Tested against `test/fake-gateway.ts` only.
 - `client/` holds the task desk placeholder, the settings page and the navigation role.
 
 ## Install and use
@@ -45,8 +46,8 @@ route.
    install from a clean checkout.
 2. Open the Web workbench, then the companion's settings page. Fill in 称呼 (how to address you),
    可用工作区 (one `short-name=/absolute/path` per line), 专用工作区 (a separate folder the judge
-   works in; it must not be one of the workspaces above) and 聊天渠道实例. No chat channel exists
-   yet, so any non-empty value works; the desk reports the channel as a problem. Press 保存. The
+   works in; it must not be one of the workspaces above). The chat channel is not a setting: it
+   comes from pairing (see "Chat channel" below), and an old 聊天渠道实例 value is ignored. Press 保存. The
    platform asks you to review the change: choose "Allow once", then press 保存 again. The page shows
    `已提交：completed`. `agh plugins config set` does not reach these settings.
 3. Grant the companion each folder it may start sessions in, the dedicated judge folder included:
@@ -83,10 +84,30 @@ route.
   task as 已暂停（平台拒绝）. The notice carries the short error. The count is kept with the pending
   start, so a restart does not reset it. 继续 opens a new session with a fresh count.
 
+## Chat channel
+
+The Companion has no chat client of its own. It needs an AGH build with channel targets (Extension
+API 5.12); the exact `develop` commit that contains them is to be filled in here once that change
+is merged, and a host without it refuses to install this package.
+
+1. Install and enable the channel plugin for your chat app (for example the Feishu one) and start
+   its instance.
+2. In the AGH Web workbench open the plugin channel page, press "配对到插件服务" on the instance and
+   pick 伴侣. The page shows a one-hour code.
+3. Send that code to the bot in a private chat. The platform records the pairing; from then on your
+   private messages reach the Companion and its replies come back as text in the same chat.
+4. To end it, press 解除配对 on the task desk or on the channel page.
+
+After the AGH daemon restarts, the chat app may refuse the bot's messages until you send one
+message; the desk then says 飞书需要你先发一句话 and the waiting replies go out after it.
+
 ## Not working yet
 
-- Phone channel: the chat gateway plugin does not exist on the platform, so the engine runs without a
-  channel and replies stay pending in the store.
+- Phone channel, real chat: only the fake platform tests have run it. No real chat app and no real
+  daemon with channel targets have been tried. Until the platform change lands, the real-daemon run
+  below cannot pass its channel steps.
+- Rich messages: step 1 sends text only. Choices arrive as a numbered list that points to the AGH
+  Companion page; there are no buttons, and a quoted reply carries no task.
 - Card approval: a chat card cannot answer an approval, and `start` takes no channel binding.
   Approvals are answered in the Web session only.
 - Model routes: the platform needs a route and a model name; the settings hold only a route, so a set

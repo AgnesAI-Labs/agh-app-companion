@@ -1,3 +1,4 @@
+import { channelGateway } from './channel-targets.mjs'
 import { openChannel } from './channel.mjs'
 import { buildDesk, deskServices, submitDesk } from './desk.mjs'
 import { createEngine } from './engine.mjs'
@@ -32,12 +33,13 @@ const taskRepo = (task) => (typeof (/** @type {any} */ (task).repo) === 'string'
  */
 
 /**
- * The chat gateway port. The gateway is another plugin that is not on the platform yet, and
- * channel-contract.mjs assumes no lookup call for it (A13), so nothing resolves today.
+ * The chat gateway port, from the platform's managed channel targets (`init.channels`, Extension API
+ * 5.12). Absent on a host without them.
+ * @param {import('@agnes/extension-api').ProfileManagedInit} init
  * @returns {import('./channel-contract.mjs').ChannelGateway | undefined}
  */
-export function resolveChannelGateway() {
-  return undefined
+export function resolveChannelGateway(init) {
+  return channelGateway(/** @type {any} */ (init).channels)
 }
 
 /** Engine without a channel: outbox rows stay pending until one exists. */
@@ -123,43 +125,58 @@ export async function startEngine(
       text: `a model route is set for ${routed.join(', ')}, but the platform needs a route and a model name and the settings hold only the route; clear it to use the deployment default`,
     })
 
+  /** @type {string | null} why no channel is open: no platform support, not paired, or the pairing cannot serve */
   let channelProblem = null
-  if (!blockers.length) {
-    const gateway = resolveGateway(init)
-    if (!gateway)
-      channelProblem =
-        'the chat channel gateway is not available on this platform; the companion runs without a channel'
-    else {
-      const opened = await openChannel({
-        settings,
-        gateway,
-        store,
-        receive: (signal) => /** @type {any} */ (engine).receive(signal),
-      })
-      if (!opened.ok) channelProblem = opened.status
-      else {
-        const recorded = store.channelOwner()
-        const current = opened.channel.owner
-        if (recorded && (recorded.instanceId !== current.instanceId || recorded.userId !== current.userId))
-          blockers.push({
-            kind: 'owner',
-            recorded,
-            current,
-            text: `this store was used with owner ${recorded.userId} on channel instance ${recorded.instanceId}, but the channel now serves ${current.userId} on ${current.instanceId}. Nothing was delivered or deleted. Bind the recorded owner again, or clear the companion's store to start over for the new owner.`,
-          })
-        else {
-          if (!recorded) store.recordChannelOwner(current)
-          channel = opened.channel
-        }
+  /** @type {Problem | null} the store belongs to another owner than the current pairing */
+  let ownerProblem = null
+  const gateway = resolveGateway(init)
+  if (!gateway)
+    channelProblem =
+      'the platform does not provide channel targets (init.channels); the companion runs without a chat channel'
+  /** The engine reads the channel through this on every delivery, so one opened later is used at once. */
+  const channelPort = Object.freeze({ deliver: (/** @type {any} */ message) => (channel ?? NO_CHANNEL).deliver(message) })
+
+  /** Opens the channel on the current pairing if none is open; at most one open at a time. */
+  let opening = Promise.resolve()
+  const openIfNone = () => {
+    opening = opening.then(async () => {
+      if (!gateway || channel || stopped) return
+      const opened = await openChannel({ gateway, store, receive: (signal) => /** @type {any} */ (engine).receive(signal) })
+      if (!opened.ok) {
+        channelProblem = opened.status
+        return
       }
-    }
+      const recorded = store.channelOwner()
+      const current = opened.channel.owner
+      if (recorded && (recorded.instanceId !== current.instanceId || recorded.userId !== current.userId)) {
+        channelProblem = null
+        ownerProblem = {
+          kind: 'owner',
+          recorded,
+          current,
+          text: `this store was used with owner ${recorded.userId} on channel instance ${recorded.instanceId}, but the channel now serves ${current.userId} on ${current.instanceId}. Nothing was delivered or deleted. Pair the recorded owner again, or clear the companion's store to start over for the new owner.`,
+        }
+        return
+      }
+      if (!recorded) store.recordChannelOwner(current)
+      ownerProblem = null
+      channelProblem = null
+      channel = opened.channel
+    })
+    return opening.catch(() => {})
+  }
+  if (!blockers.length) {
+    await openIfNone()
+    // A store of another owner stops the engine at start, as before; a pairing that changes later only
+    // reports the problem.
+    if (ownerProblem) blockers.push(ownerProblem)
   }
 
   if (!blockers.length && sessions)
     engine = createEngine({
       store,
       sessions,
-      channel: channel ?? NO_CHANNEL,
+      channel: channelPort,
       settings,
       limits,
       ...(now ? { now } : {}),
@@ -189,6 +206,7 @@ export async function startEngine(
   const status = () => {
     /** @type {Problem[]} */
     const problems = [...blockers]
+    if (ownerProblem && !blockers.includes(ownerProblem)) problems.push(ownerProblem)
     const channelNow = channelProblem ?? channel?.status() ?? null
     if (channelNow) problems.push({ kind: 'channel', text: channelNow })
     if (engine) {
@@ -223,6 +241,33 @@ export async function startEngine(
     return { running: engine !== null && !stopped, problems }
   }
 
+  /** @returns {Promise<import('./desk.mjs').PairingView>} */
+  const pairingView = async () => {
+    if (!gateway) return { state: 'unsupported' }
+    try {
+      const pairing = await gateway.pairing()
+      return pairing ? { state: 'paired', provider: pairing.provider, label: pairing.label, running: pairing.running } : { state: 'unpaired' }
+    } catch {
+      return { state: 'unknown' }
+    }
+  }
+  /** @param {unknown} raw */
+  const receive = async (raw) => {
+    if (!channel && !stopped) await openIfNone()
+    if (!channel || !engine || stopped)
+      return { kind: 'dropped', reason: status().problems[0]?.text ?? 'the companion is stopped' }
+    return channel.receive(raw)
+  }
+  if (gateway) {
+    // The platform retries a handler that throws, so a handler that returns means the event is settled (A1).
+    gateway.onEvent(async (event) => {
+      await receive(event)
+    })
+    gateway.onPairingChange(() => {
+      void openIfNone().then(() => channel?.refresh())
+    })
+  }
+
   init.ready()
   if (engine) {
     const started = engine
@@ -239,8 +284,9 @@ export async function startEngine(
      * The task desk's read (desk.mjs): the engine's tasks, cards, usage and problems in one answer.
      * @param {{ taskId?: string }} [input]
      */
-    desk: (input) =>
-      buildDesk(
+    desk: async (input) => {
+      await channel?.refresh()
+      return buildDesk(
         {
           engine: stopped ? null : engine,
           store,
@@ -250,9 +296,11 @@ export async function startEngine(
           sessions,
           prRepo,
           workspaces: settings.workspaces.map((w) => w.shortName),
+          pairing: await pairingView(),
         },
         input,
-      ),
+      )
+    },
     /**
      * The owner's input from the task desk, as an inbox signal with source `desk`. It enters the
      * engine's own `receive`, not the channel's: the desk works with no chat channel.
@@ -260,14 +308,19 @@ export async function startEngine(
      */
     submit: (input, operationId) => submitDesk({ engine: stopped ? null : engine, store, now: clock }, input, operationId),
     /**
-     * The gateway's entry for one channel event (A13). Without a running engine and channel the
-     * event is dropped with the reason, so the gateway does not redeliver it forever.
+     * One channel event, as the platform hands it over (A13). With no open channel it first tries to
+     * open one, since the pairing and its first message may arrive in either order; without a
+     * running engine and channel the event is dropped with the reason.
      * @param {unknown} raw
      */
-    async receive(raw) {
-      if (!channel || !engine || stopped)
-        return { kind: 'dropped', reason: status().problems[0]?.text ?? 'the companion is stopped' }
-      return channel.receive(raw)
+    receive,
+    /** Ends the service's pairing from the task desk; the platform needs no approval to revoke. */
+    async unpair() {
+      const pairing = await gateway?.pairing()
+      if (!pairing) return { ok: true, result: 'not-paired' }
+      await gateway?.unpair(pairing.id)
+      await channel?.refresh()
+      return { ok: true, result: 'unpaired' }
     },
   })
 }

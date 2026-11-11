@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { CHANNEL_TITLES, openChannel } from '../channel.mjs'
+import { CHANNEL_TITLES, CHOICE_POINTER, openChannel, render, STATUS } from '../channel.mjs'
+import { ChannelRefusal } from '../channel-targets.mjs'
 import { LIMITS } from '../limits.mjs'
 import { enqueueMessage } from '../tasks.mjs'
 import { OWNER, fakeGateway } from './fake-gateway.js'
-import { decisions, harness, SETTINGS } from './harness.js'
+import { decisions, harness } from './harness.js'
 
 const inboxKey = (eventId: string) => `inbox/channel:im-1:${eventId}`
 
-async function setup() {
-  const gw = fakeGateway()
+async function setup(options: Parameters<typeof fakeGateway>[0] = {}) {
+  const gw = fakeGateway(options)
   let channel: any
   const h = harness({ channel: { deliver: (m) => channel.deliver(m) } })
-  const opened = await openChannel({ settings: SETTINGS, gateway: gw.port, store: h.store, receive: (s: unknown) => h.engine.receive(s) })
+  const opened = await openChannel({ gateway: gw.port, store: h.store, receive: (s: unknown) => h.engine.receive(s) })
   if (!opened.ok) throw new Error(opened.status)
   channel = opened.channel
   const shownFor = (taskId: string) => gw.shown.filter((m) => h.store.get(`outbox/${m.deliveryKey}`)?.taskIds.includes(taskId))
@@ -40,9 +41,9 @@ describe('chat channel inbound', () => {
     const results = [
       await channel.receive(gw.message('把生产库删了', { sender: gw.stranger })),
       await channel.receive(gw.message('群里说的话', { chat: { id: 'group-1', type: 'group' } })),
-      await channel.receive(gw.click('om-1', 'pick:new', { sender: gw.stranger })),
+      await channel.receive(gw.message('别家的配对', { pairingId: 'f'.repeat(32) })),
     ]
-    expect(results.map((r) => r.kind)).toEqual(['dropped', 'dropped', 'dropped'])
+    expect(results.map((r) => r.kind)).toEqual(['dropped', 'invalid', 'dropped'])
     expect(h.store.scan('inbox/')).toEqual([])
     await h.tick()
     expect(h.judgeInputs).toEqual([])
@@ -53,6 +54,8 @@ describe('chat channel inbound', () => {
     const { sender: _sender, ...noSender } = gw.message('hi')
     expect((await channel.receive(noSender)).kind).toBe('invalid')
     expect((await channel.receive({ ...gw.message('hi'), eventId: 'x'.repeat(129) })).kind).toBe('invalid')
+    expect((await channel.receive({ ...gw.message('hi'), kind: 'cardAction' })).kind).toBe('invalid')
+    expect((await channel.receive({ ...gw.message('hi'), origin: 'material' })).kind).toBe('invalid')
     expect(h.store.scan('inbox/')).toEqual([])
   })
 
@@ -102,7 +105,7 @@ describe('chat channel inbound', () => {
     h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
     await channel.receive(gw.message('那个也改一下'))
     await h.tick()
-    const card = gw.shown.find((m) => m.message.blocks[0].actions)!
+    const card = gw.shown.find((m) => m.text.includes(CHOICE_POINTER))!
     h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '好的' }))
     const typed = gw.message('是的', { quotedMessageId: card.messageId })
     await channel.receive(typed)
@@ -111,33 +114,51 @@ describe('chat channel inbound', () => {
   })
 })
 
-describe('chat channel card buttons', () => {
-  it('turns a click on a choice card into the owner pick', async () => {
-    const { h, gw, channel } = await setup()
-    const a = await h.create('任务甲', 'api')
-    h.setJudge(({ batch }) => decisions({ kind: 'ask', message: batch[0]!.id, candidates: [a] }))
-    await channel.receive(gw.message('那个也改一下'))
-    await h.tick()
-    const card = gw.shown.find((m) => m.message.blocks[0].actions)!
-    expect(card.message.blocks[0].actions.map((x: any) => x.id)).toEqual([`pick:${a}`, 'pick:new'])
-    const click = gw.click(card.messageId, `pick:${a}`)
-    expect((await channel.receive(click)).kind).toBe('accepted')
-    await h.tick()
-    expect(h.entry(inboxKey(click.eventId)).disposition).toMatchObject({ kind: 'control', taskIds: [a] })
+describe('chat channel text rendering', () => {
+  const plain = (text: string, detail: string | null = null) => ({ deliveryKey: 'k', text, detail, card: null })
+
+  it('sends one text message: a fixed title line, then the body with its detail', async () => {
+    const { gw, channel } = await setup()
+    await channel.deliver({ ...plain('T-0001 修首页标题：完成', '改了 src/app.ts'), deliveryKey: 't1' })
+    expect(gw.shown).toHaveLength(1)
+    expect(gw.shown[0]).toMatchObject({ chatId: OWNER.chatId, deliveryKey: 't1', title: CHANNEL_TITLES.message, body: 'T-0001 修首页标题：完成\n\n改了 src/app.ts' })
   })
 
-  it('drops a click on a card the companion did not send or with an action it did not render', async () => {
-    const { h, gw, channel, shownFor } = await setup()
-    const a = await h.create('任务甲', 'api')
-    const ack = shownFor(a).at(-1)!
-    const results = [
-      await channel.receive(gw.click('om-unknown', `pick:${a}`)),
-      await channel.receive(gw.click(ack.messageId, `pick:${a}`)),
-      await channel.receive(gw.click(ack.messageId, `stop:${a}`)),
-    ]
-    expect(results.map((r) => r.kind)).toEqual(['dropped', 'dropped', 'dropped'])
-    await h.tick()
-    expect(h.task(a).state).not.toBe('abandoned')
+  it('turns a choice card into a numbered list that points to the AGH Companion page', async () => {
+    const { h, gw, channel } = await setup()
+    const a = await h.create('修首页标题', 'api')
+    const b = await h.create('补登录测试', 'web')
+    await channel.deliver({ deliveryKey: 'c1', text: '接到哪个？', detail: null, card: { options: [{ taskId: a, title: '修首页标题' }, { taskId: b, title: '补登录测试' }], allowNew: true } })
+    const sent = gw.shown.at(-1)!
+    expect(sent.title).toBe(CHANNEL_TITLES.choice)
+    expect(sent.body).toBe(`接到哪个？\n\n1. 修首页标题\n2. 补登录测试\n3. 新建任务\n${CHOICE_POINTER}`)
+    expect(Object.keys(sent)).not.toContain('actions')
+  })
+
+  it('cuts the body, never the list or the pointer, and never exceeds the text limit', () => {
+    const card = { options: [{ taskId: 'T-1', title: '甲' }], allowNew: false }
+    const long = { deliveryKey: 'k', text: '字'.repeat(500), detail: '细'.repeat(500), card }
+    const text = render(long, 120)
+    expect(text.length).toBeLessThanOrEqual(120)
+    expect(text.endsWith(`1. 甲\n${CHOICE_POINTER}`)).toBe(true)
+    expect(text).toContain('…')
+    for (const limit of [1, 2, 5, 30, 61, 200]) expect(render(long, limit).length).toBeLessThanOrEqual(limit)
+    expect(render(plain('短'), 4000)).toBe(`${CHANNEL_TITLES.message}\n\n短`)
+  })
+
+  it('does not split an emoji when it cuts', () => {
+    const text = render(plain('😀'.repeat(50)), 24)
+    expect(text.length).toBeLessThanOrEqual(24)
+    expect(text).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+  })
+
+  it('never makes the platform answer TOO_LARGE, however long the message and small the limit', async () => {
+    const { gw, channel } = await setup({ textChars: 40 })
+    await channel.deliver({ ...plain('字'.repeat(5000), '细'.repeat(5000)), deliveryKey: 'big' })
+    await channel.deliver({ deliveryKey: 'big-card', text: '问'.repeat(5000), detail: null, card: { options: [{ taskId: 'T-1', title: '题'.repeat(200) }], allowNew: true } })
+    expect(gw.rejected).toEqual([])
+    expect(gw.shown).toHaveLength(2)
+    for (const m of gw.shown) expect(m.text.length).toBeLessThanOrEqual(40)
   })
 })
 
@@ -165,7 +186,7 @@ describe('chat channel outbound', () => {
     expect(new Set(gw.shown.map((s) => s.deliveryKey)).size).toBe(gw.shown.length)
   })
 
-  it('does not resend while a delivery is still pending at the gateway', async () => {
+  it('does not resend while a delivery is still pending at the platform', async () => {
     const { gw, channel } = await setup()
     gw.setMode('stuck')
     await expect(channel.deliver(outbound('k1'))).rejects.toThrow()
@@ -177,103 +198,131 @@ describe('chat channel outbound', () => {
     expect(gw.shown).toHaveLength(1)
   })
 
-  it('titles every message with fixed generic text and keeps task content in the body', async () => {
+  it('sends a delivery left unknown again with the same key after a restart, once', async () => {
     const { h, gw, channel } = await setup()
-    const a = await h.create('修首页标题', 'api')
-    await channel.deliver({ deliveryKey: 'c1', text: '接到哪个？', detail: null, card: { options: [{ taskId: a, title: '修首页标题' }], allowNew: true } })
-    await channel.deliver(outbound('t1'))
-    expect(gw.shown.length).toBeGreaterThan(2)
-    for (const { message } of gw.shown) {
-      expect(Object.keys(message)).toEqual(['blocks'])
-      expect(message.blocks).toHaveLength(1)
-      expect(message.blocks[0].kind).toBe('card')
-      expect(Object.values(CHANNEL_TITLES)).toContain(message.blocks[0].title)
-    }
-    expect(gw.shown.at(-1)!.message.blocks[0].body).toContain('改了 src/app.ts')
+    gw.setMode('down')
+    await expect(channel.deliver(outbound('task:T-0001:1'))).rejects.toThrow(/channel down/)
+    expect(gw.ledger.get('task:T-0001:1')).toEqual({ state: 'unknown' })
+    gw.setMode('ok')
+    const reopened = await openChannel({ gateway: gw.port, store: h.store, receive: () => ({ kind: 'invalid' }) })
+    if (!reopened.ok) throw new Error(reopened.status)
+    const receipt = await reopened.channel.deliver(outbound('task:T-0001:1'))
+    await reopened.channel.deliver(outbound('task:T-0001:1'))
+    expect(gw.shown).toHaveLength(1)
+    expect(gw.shown[0]).toMatchObject({ deliveryKey: 'task:T-0001:1', messageId: receipt.messageId })
+  })
+
+  it('holds the outbox in order while the chat needs the owner to write first, shows the hint, and sends the backlog after the owner writes', async () => {
+    const { h, gw, channel } = await setup()
+    gw.setMode('unconfirmed')
+    const id = await h.create('修首页标题')
+    await h.tick()
+    expect(gw.shown).toEqual([])
+    expect(channel.status()).toBe(STATUS.unconfirmed)
+    expect(channel.status()).toContain('TARGET_UNCONFIRMED')
+    const pending = h.store.scan('outbox/').map((r) => r.value).filter((m) => m.sentAt === null)
+    expect(pending.length).toBeGreaterThan(0)
+
+    gw.setMode('ok')
+    expect((await channel.receive(gw.message('我在'))).kind).toBe('accepted')
+    expect(channel.status()).toBeNull()
+    await h.tick()
+    expect(h.store.scan('outbox/').map((r) => r.value).filter((m) => m.sentAt === null)).toEqual([])
+    expect(gw.shown.map((m) => m.deliveryKey).slice(0, pending.length)).toEqual(pending.map((m) => m.deliveryKey))
+    expect(pending.some((m) => m.taskIds.includes(id))).toBe(true)
   })
 })
 
 describe('chat channel setup', () => {
-  it('refuses to run with a clear status when the channel instance is missing or unusable', async () => {
+  it('refuses to run with a clear status when there is no pairing or its channel is not running', async () => {
     const h = harness()
     const receive = () => ({ kind: 'invalid' })
-    const open = (settings: typeof SETTINGS, gw = fakeGateway()) => openChannel({ settings, gateway: gw.port, store: h.store, receive })
-    expect(await open({ ...SETTINGS, channelInstance: '' })).toEqual({ ok: false, status: 'channelInstance is not set' })
-    expect(await open({ ...SETTINGS, channelInstance: 'Bad Name' })).toMatchObject({ ok: false, status: expect.stringContaining('not a channel instance id') })
-    expect(await open({ ...SETTINGS, channelInstance: 'im-2' })).toMatchObject({ ok: false, status: expect.stringContaining('not available') })
-    expect(await open(SETTINGS, fakeGateway({ running: false }))).toMatchObject({ ok: false, status: expect.stringContaining('not running') })
-    expect(await open(SETTINGS, fakeGateway({ owner: null }))).toMatchObject({ ok: false, status: expect.stringContaining('no bound owner') })
-  })
-
-  it('exposes the owner conversation a worker session binds to, and nothing about approvals', async () => {
-    const { channel } = await setup()
-    expect(await channel.binding()).toEqual({ instanceId: 'im-1', targetId: OWNER.targetId })
+    const open = (gw = fakeGateway()) => openChannel({ gateway: gw.port, store: h.store, receive })
+    expect(await open(fakeGateway({ paired: false }))).toEqual({ ok: false, status: STATUS.notPaired })
+    expect(await open(fakeGateway({ running: false }))).toEqual({ ok: false, status: STATUS.notRunning })
+    const broken = fakeGateway()
+    broken.channels.pairing = async () => ({ id: 'x' }) as never
+    expect(await open(broken)).toMatchObject({ ok: false, status: expect.stringContaining('cannot read') })
   })
 })
 
-describe('chat channel owner changes while running', () => {
+describe('chat channel pairing changes while running', () => {
   const outbound = (deliveryKey: string) => ({ deliveryKey, text: 'T-0001 修首页标题：完成', detail: '改了 src/app.ts', card: null })
 
-  it('drops a message from the owner sender in a chat other than the owner chat', async () => {
+  it('drops a message from the owner sender in a chat other than the paired chat', async () => {
     const { h, gw, channel } = await setup()
     const result = await channel.receive(gw.message('帮我看看登录页', { chat: { id: 'dm-other', type: 'dm' } }))
     expect(result).toMatchObject({ kind: 'dropped' })
     expect(h.store.scan('inbox/')).toEqual([])
   })
 
-  it('refuses everything after a rebind, to the old owner and the new one, and says a restart is needed', async () => {
+  it('refuses everything after a re-pair to another owner, to the old owner and the new one, and says a restart is needed', async () => {
     const { h, gw, channel } = await setup()
     const id = await h.create('修首页标题')
     const shownBefore = gw.shown.length
     const inboxBefore = h.store.scan('inbox/').length
     gw.rebind(gw.nextOwner)
 
-    const fromOld = await channel.receive(gw.message('继续'))
+    const fromOld = await channel.receive(gw.message('继续', { pairingId: OWNER.id }))
     const fromNew = await channel.receive(gw.message('我是新主人', { sender: { userId: gw.nextOwner.userId }, chat: { id: gw.nextOwner.chatId, type: 'dm' } }))
     expect(fromOld).toMatchObject({ kind: 'dropped' })
     expect(fromNew).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('rebound') })
     expect(h.store.scan('inbox/')).toHaveLength(inboxBefore)
 
     await expect(channel.deliver(outbound('after-rebind'))).rejects.toThrow(/rebound/)
-    await expect(channel.binding()).rejects.toThrow(/rebound/)
     enqueueMessage({ store: h.store, at: h.now(), limits: LIMITS, workspaces: ['api'] }, { deliveryKey: 'late:1', text: '结果', taskIds: [id] })
     await h.tick()
     expect(gw.shown).toHaveLength(shownBefore)
-    expect(gw.shown.filter((m) => m.chatId === OWNER.chatId)).toHaveLength(shownBefore)
     expect(h.store.get('outbox/late:1').sentAt).toBeNull()
     expect(channel.status()).toMatch(/rebound.*restart/)
   })
 
-  it('treats a change of any one owner field as a rebind', async () => {
+  it('treats a change of any one pairing field as a re-pair', async () => {
     const { gw, channel } = await setup()
-    gw.rebind({ ...OWNER, userId: 'u-other' })
-    expect(await channel.receive(gw.message('继续'))).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('rebound') })
-    gw.rebind({ ...OWNER, chatId: 'dm-new' })
-    await expect(channel.deliver(outbound('k-chat'))).rejects.toThrow(/rebound/)
-    gw.rebind({ ...OWNER, targetId: 'c'.repeat(32) })
-    await expect(channel.binding()).rejects.toThrow(/rebound/)
+    for (const patch of [{ userId: 'u-other' }, { chatId: 'dm-new' }, { id: 'c'.repeat(32) }]) {
+      gw.rebind({ ...OWNER, ...patch })
+      await expect(channel.deliver(outbound(`k-${Object.keys(patch)[0]}`))).rejects.toThrow(/rebound/)
+    }
     expect(gw.shown).toHaveLength(0)
   })
 
-  it('drops inbound and fails delivery while the instance is stopped or removed, and resumes when it runs again', async () => {
+  it('stops delivery and shows the state once unpaired, and resumes for the same owner when paired again', async () => {
     const { h, gw, channel } = await setup()
     expect(channel.status()).toBeNull()
-    for (const [change, status] of [[() => gw.setRunning(false), /not running/], [() => gw.rebind(null), /no bound owner/]] as const) {
-      change()
-      expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: expect.stringMatching(status) })
-      await expect(channel.deliver(outbound(`k-${String(status)}`))).rejects.toThrow(status)
-      expect(channel.status()).toMatch(status)
-      gw.setRunning(true)
-      gw.rebind(OWNER)
-    }
+    await gw.channels.unpair(OWNER.id)
+    expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: STATUS.notPaired })
+    await expect(channel.deliver(outbound('k-unpaired'))).rejects.toThrow(STATUS.notPaired)
+    expect(channel.status()).toBe(STATUS.notPaired)
+    expect(gw.sends).toBe(0)
+
+    gw.pair(OWNER)
     expect((await channel.receive(gw.message('又在了'))).kind).toBe('accepted')
     expect(channel.status()).toBeNull()
-
-    gw.remove()
-    expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: expect.stringContaining('not available') })
-    await expect(channel.deliver(outbound('k-removed'))).rejects.toThrow(/not available/)
-    await expect(channel.binding()).rejects.toThrow(/not available/)
-    expect(gw.shown).toHaveLength(0)
+    await channel.deliver(outbound('k-again'))
+    expect(gw.shown).toHaveLength(1)
     expect(h.store.scan('inbox/')).toHaveLength(1)
+  })
+
+  it('keeps delivering nothing and shows the state when the platform answers NOT_PAIRED to a send', async () => {
+    const { h, gw, channel } = await setup()
+    gw.port.send = async () => {
+      throw new ChannelRefusal('NOT_PAIRED', 'NOT_PAIRED')
+    }
+    await expect(channel.deliver(outbound('k1'))).rejects.toThrow()
+    expect(channel.status()).toBe(STATUS.notPaired)
+    enqueueMessage({ store: h.store, at: h.now(), limits: LIMITS, workspaces: ['api'] }, { deliveryKey: 'late:1', text: '结果', taskIds: [] })
+    await h.tick()
+    expect(h.store.get('outbox/late:1').sentAt).toBeNull()
+  })
+
+  it('drops inbound and fails delivery while the paired channel is stopped, and resumes when it runs again', async () => {
+    const { gw, channel } = await setup()
+    gw.setRunning(false)
+    expect(await channel.receive(gw.message('在吗'))).toMatchObject({ kind: 'dropped', reason: STATUS.notRunning })
+    await expect(channel.deliver(outbound('k-stopped'))).rejects.toThrow(STATUS.notRunning)
+    gw.setRunning(true)
+    expect((await channel.receive(gw.message('又在了'))).kind).toBe('accepted')
+    expect(channel.status()).toBeNull()
+    expect(gw.shown).toHaveLength(0)
   })
 })

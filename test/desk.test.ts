@@ -464,8 +464,8 @@ describe('companion.submit', () => {
 })
 
 describe('who may call the desk', () => {
-  const resource = async () => ({ desk: async () => ({ ok: 'desk' }), submit: (_: unknown, op: string) => ({ ok: true, op }) })
-  const [query, effect] = deskServices(resource) as any[]
+  const resource = async () => ({ desk: async () => ({ ok: 'desk' }), submit: (_: unknown, op: string) => ({ ok: true, op }), unpair: async () => ({ ok: true, result: 'unpaired' }) })
+  const [query, effect, unpair] = deskServices(resource) as any[]
   const owner = { source: 'client-web', actor: { id: 'me', org: 'local', role: 'owner', deptPath: [], attrs: {} }, scope: { kind: 'profile', profileId: 'p', activationId: 'a' } }
   const call = { ...owner, admission: { operationId: 'op-1' } }
 
@@ -473,6 +473,7 @@ describe('who may call the desk', () => {
     expect(() => assertLocalOwner(owner as never)).not.toThrow()
     expect(await query.handler({}, owner)).toEqual({ ok: 'desk' })
     expect(await effect.handler({ kind: 'message', text: 'hi' }, call)).toEqual({ ok: true, op: 'op-1' })
+    expect(await unpair.handler({}, owner)).toEqual({ ok: true, result: 'unpaired' })
   })
 
   it.each([
@@ -483,27 +484,30 @@ describe('who may call the desk', () => {
     ['no profile scope', { ...call, scope: undefined }],
   ])('refuses %s, for the read and for the effect, and runs nothing', async (_name, ctx) => {
     let ran = 0
-    const [q, e] = deskServices(async () => {
+    const [q, e, u] = deskServices(async () => {
       ran++
       return resource()
     }) as any[]
     await expect(q.handler({}, ctx)).rejects.toThrow('only the owner on the local Web')
     await expect(e.handler({ kind: 'message', text: 'hi' }, ctx)).rejects.toThrow('only the owner on the local Web')
+    await expect(u.handler({}, ctx)).rejects.toThrow('only the owner on the local Web')
     expect(ran).toBe(0)
   })
 
   it('needs the host\'s operation id for an effect, and says so when the service is not ready', async () => {
     await expect(effect.handler({ kind: 'message', text: 'hi' }, owner)).rejects.toThrow('operation id')
-    const [q, e] = deskServices(async () => {
+    const [q, e, u] = deskServices(async () => {
       throw new Error('resource is not ready')
     }) as any[]
     expect(await q.handler({}, owner)).toMatchObject({ running: false, canSubmit: false, problems: [{ kind: 'engine', unavailable: true, text: 'resource is not ready' }] })
     expect(await e.handler({ kind: 'message', text: 'hi' }, call)).toMatchObject({ ok: false, code: 'not-running' })
+    expect(await u.handler({}, owner)).toMatchObject({ ok: false, code: 'not-running' })
   })
 
   it('declares the effect as the same kind of effect DevBoard\'s page writes are, and the query as a plain read', () => {
     expect(DESK_CAPABILITIES.submit.effectPolicy).toEqual({ isDestructive: false, isOpenWorld: false, replay: 'idempotent', requiresApproval: 'never', approvalScopes: [] })
     expect(DESK_CAPABILITIES.query).not.toHaveProperty('effectPolicy')
-    expect([query.name, effect.name]).toEqual(['companion.desk', 'companion.submit'])
+    expect([query.name, effect.name, unpair.name]).toEqual(['companion.desk', 'companion.submit', 'companion.unpair'])
+    expect(DESK_CAPABILITIES.unpair.effectPolicy).toEqual({ isDestructive: true, isOpenWorld: false, replay: 'idempotent', requiresApproval: 'never', approvalScopes: [] })
   })
 })
