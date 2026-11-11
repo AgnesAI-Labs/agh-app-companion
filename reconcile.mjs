@@ -138,7 +138,7 @@ function apply(tx, taskId, event, reply) {
   if (reason !== undefined) return handback(tx, task, reason)
   if (task.attach?.sent) tx.store.putTask({ ...task, attach: null })
   if (task.prFailed) return void transit(tx, taskId, 'prFailed', { note: task.prFailed })
-  transit(tx, taskId, 'sessionCompleted', { note: reply.slice(0, 500) })
+  transit(tx, taskId, 'sessionCompleted', { note: reply.slice(0, 500), message: reply })
 }
 
 /**
@@ -158,7 +158,7 @@ function handback(tx, task, reason) {
         .map((id) => getTask(tx, id))
         .filter((t) => t.state !== 'abandoned' && t.state !== 'expired')
   // The worker's reason is detail: the owner sees it, the judge's recent conversation never does.
-  choiceCard(tx, mark.inbox, candidates, `${label(task)} 退回了一条消息，要接到哪里？`, entry?.handedBack ? 2 : 1, `原因：${reason}`)
+  choiceCard(tx, mark.inbox, candidates, `${label(task)} 退回了一条消息，要接到哪里？`, entry?.handedBack ? 2 : 1, `原因：${reason.slice(0, 200)}`)
   if (entry) tx.store.set(mark.inbox, { ...entry, handedBack: true })
   dispose(tx, mark.inbox, { kind: 'returned', taskIds: [task.id], reason })
 }

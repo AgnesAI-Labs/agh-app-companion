@@ -79,7 +79,7 @@ const NOTIFY = new Set(['done', 'failed', 'paused', 'expired'])
 export const stateText = (task) =>
   `${STATE_TEXT[task.state]}${task.reason ? `（${REASON_TEXT[task.reason]}）` : ''}`
 export const label = (task) => `${task.id}（${task.workspace}）${task.title}`
-const DETAIL_MAX = 200
+const DETAIL_MAX = 8000
 const clip = (value) => ([...value].length > DETAIL_MAX ? `${[...value].slice(0, DETAIL_MAX).join('')}…` : value)
 export const hash = (value) => createHash('sha256').update(value).digest('hex')
 
@@ -150,7 +150,7 @@ const slotsUsed = (tx, workspace, exceptId) =>
 /**
  * Applies one table event to a task: state, reason, task event, effects, then the workspace queue.
  * Returns false when the table has no row for the event in the task's state.
- * @param {Tx} tx @param {string} taskId @param {TaskEventName} event @param {{ about?: string, note?: string, quiet?: boolean }} [detail]
+ * @param {Tx} tx @param {string} taskId @param {TaskEventName} event @param {{ about?: string, note?: string, message?: string, quiet?: boolean }} [detail]
  */
 export function transit(tx, taskId, event, detail = {}) {
   const task = getTask(tx, taskId)
@@ -206,7 +206,7 @@ export function transit(tx, taskId, event, detail = {}) {
   if (row.effect === 'continue' && !lost)
     enqueueOp(tx, { taskId, kind: 'send', input: failedPr ? TEXT.continuePr : TEXT.continue, key: `${taskId}:${seq}`, inbox: null, busyNoticed: false })
   if (from !== to && NOTIFY.has(to) && !detail.quiet)
-    enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.note ? { detail: detail.note } : {}), taskIds: [taskId] })
+    enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.message ?? detail.note ? { detail: detail.message ?? detail.note } : {}), taskIds: [taskId] })
   if (SLOT_STATES.includes(from) && !SLOT_STATES.includes(to)) admit(tx, task.workspace)
   return true
 }
