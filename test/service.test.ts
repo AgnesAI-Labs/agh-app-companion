@@ -12,10 +12,10 @@ import { HOST_ROWS, memoryOwnedStore } from './owned-store.js'
 
 type Shutdown = (reason: 'disable' | 'upgrade' | 'exit') => Promise<{ state: 'settled' | 'unknown' }>
 
-function scripted() {
+function scripted(workerReply = '改好了，测试通过') {
   return fakeSessions({
     reply(request, input) {
-      if (request.bundle === ROLES.worker.bundle) return { outcome: 'completed', text: '改好了，测试通过' }
+      if (request.bundle === ROLES.worker.bundle) return { outcome: 'completed', text: workerReply }
       const { batch } = readJudgeInput(input)
       return {
         outcome: 'completed',
@@ -115,6 +115,35 @@ describe('companion service', () => {
     ])
     expect(gateway.shown.every((m) => m.chatId === OWNER.chatId)).toBe(true)
     expect(s.store.get('meta')).toMatchObject({ channelOwner: { instanceId: 'im-1', userId: OWNER.userId } })
+    await s.shutdown()
+  })
+
+  const OPTIONS = '请选择：\n1. 方案一，只改登录页\n2. 方案二，连同注册页\n3. 方案三，先不动'
+  const longReply = `${'分析结论。'.repeat(170)}${OPTIONS}`
+
+  it('delivers a long worker reply whole, numbered options included', async () => {
+    expect(longReply.length).toBeGreaterThan(800)
+    const gateway = fakeGateway()
+    const s = service({ sessions: scripted(longReply).port, gateway })
+    const svc = await s.started
+    await svc.receive(gateway.message('登录页报错了，修一下'))
+    await tick()
+    await tick()
+    expect(bodies(gateway).at(-1)).toBe(`T-0001（api）修登录报错：完成\n\n${longReply}`)
+    await s.shutdown()
+  })
+
+  it('still clips a worker reply longer than the channel limit', async () => {
+    const gateway = fakeGateway({ textChars: 300 })
+    const s = service({ sessions: scripted(longReply).port, gateway })
+    const svc = await s.started
+    await svc.receive(gateway.message('登录页报错了，修一下'))
+    await tick()
+    await tick()
+    const done = gateway.shown.filter((m) => m.body.includes('：完成'))
+    expect(done).toHaveLength(1)
+    expect(done[0]!.body.length).toBeLessThanOrEqual(300)
+    expect(gateway.rejected).toEqual([])
     await s.shutdown()
   })
 
