@@ -128,7 +128,7 @@ finishes as done. `ask_owner` refuses a session that is not a running task sessi
 ## Chat channel
 
 The Companion has no chat client of its own. It needs an AGH build with channel targets (Extension
-API 5.12); the exact `develop` commit that contains them is to be filled in here once that change
+API 5.13, which sends buttons and reports quoted replies and clicks); the exact `develop` commit that contains them is to be filled in here once that change
 is merged, and a host without it refuses to install this package.
 
 1. Install and enable the channel plugin for your chat app (for example the Feishu one) and start
@@ -139,6 +139,18 @@ is merged, and a host without it refuses to install this package.
    private messages reach the Companion and its replies come back as text in the same chat.
 4. To end it, press 解除配对 on the task desk or on the channel page.
 
+Buttons and quotes (needs a chat plugin that supports cards and quotes; the Feishu plugin does):
+
+- A choice about which task a message belongs to arrives as one button per task and one for a new
+  task. A question a worker asks through `ask_owner` arrives as one button per option. A tap counts
+  as the owner's own message: a task button picks that task, and an option button sends
+  the option's number `n` to the task that asked. A tap on a stale question or on an option the message never
+  offered is ignored.
+- A reply that quotes one of the Companion's messages about a single task goes to that task without
+  the judge. A chat without cards shows the options as a numbered list instead.
+- The title line is bold, and a Markdown link in a worker's text is shown as `text（address）` so you
+  can see where it points.
+
 After the AGH daemon restarts, the chat app may refuse the bot's messages until you send one
 message; the desk then says 飞书需要你先发一句话 and the waiting replies go out after it.
 
@@ -147,8 +159,6 @@ message; the desk then says 飞书需要你先发一句话 and the waiting repli
 - Phone channel, real chat: only the fake platform tests have run it. No real chat app and no real
   daemon with channel targets have been tried. Until the platform change lands, the real-daemon run
   below cannot pass its channel steps.
-- Rich messages: step 1 sends text only. Choices arrive as a numbered list that points to the AGH
-  Companion page; there are no buttons, and a quoted reply carries no task.
 - Card approval: a chat card cannot answer an approval, and `start` takes no channel binding.
   Approvals are answered in the Web session only.
 - Model routes: the platform needs a route and a model name; the settings hold only a route, so a set

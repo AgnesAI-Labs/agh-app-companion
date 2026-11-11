@@ -1,5 +1,6 @@
 import { ChannelRefusal } from './channel-targets.mjs'
 import { parseChannelEvent } from './channel-contract.mjs'
+import { isAsking } from './tasks.mjs'
 
 /**
  * The chat channel adapter: the engine's `Channel` port outbound, InboundSignal inbound. Authority
@@ -56,20 +57,66 @@ function clip(value, max) {
   return `${value.slice(0, end)}…`
 }
 
+const LABEL_MAX = 40
+const MAX_ACTIONS = 6
+const ACTION_ID = /^[A-Za-z0-9:_-]{1,64}$/
+const BUTTON_POINTER = '点按钮选择，或直接回复你的意思。'
+const LINK_LEFTOVER = /\]([(\[:])/g
+const LINK = /!?\[([^\[\]\n]*)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g
+
 /**
- * The one platform message for an outbound: a fixed title line, then the body. A choice question is
- * a numbered list with the pointer to the AGH page (A6). The body is cut first so the list and the
- * pointer survive; the result never exceeds `textChars`, so the platform cannot answer TOO_LARGE.
- * @param {import('./effects.mjs').Outbound} message @param {number} textChars
+ * Worker-written content can carry Markdown that hides where a link goes, and the chat renders it.
+ * Each `[text](url)` becomes `text（url）` so the owner sees the real address.
+ * Forms the pattern misses (an escaped bracket in the label, a reference link and its definition) are
+ * defused by a zero-width space after the `]`, so no channel can render them as a link.
+ * @param {string} value
  */
-export function render(message, textChars) {
-  const body = message.detail ? `${message.text}\n\n${message.detail}` : message.text
-  const head = `${message.card ? CHANNEL_TITLES.choice : CHANNEL_TITLES.message}\n\n`
-  const tail = message.card
-    ? `\n\n${[...message.card.options.map((o) => o.title), ...(message.card.allowNew ? [NEW_TASK_LABEL] : [])].map((t, i) => `${i + 1}. ${t}`).join('\n')}\n${CHOICE_POINTER}`
-    : ''
-  const room = textChars - head.length - tail.length
-  return room >= 1 ? head + clip(body, room) + tail : clip(head + body + tail, textChars)
+export function showLinks(value) {
+  return value
+    .replace(LINK, (_, label, url) => (!label.trim() || label.trim() === url ? url : `${label}（${url}）`))
+    .replace(LINK_LEFTOVER, ']​$1')
+}
+
+const oneLine = (value, max) => clip(value.replace(/\s+/g, ' ').trim(), max)
+
+/** The buttons a message offers, or null when it has none or they would not fit one card. @param {import('./effects.mjs').Outbound} message @returns {import('./channel-contract.mjs').ChannelAction[] | null} */
+function buttons(message) {
+  const items = message.card
+    ? [
+        ...message.card.options.map((o) => ({ id: `pick:${o.taskId}`, label: oneLine(`${o.taskId} ${o.title}`, LABEL_MAX) })),
+        ...(message.card.allowNew ? [{ id: 'pick:new', label: NEW_TASK_LABEL }] : []),
+      ]
+    : (message.ask?.options ?? []).map((option, i) => ({ id: `answer:${i + 1}`, label: oneLine(option, LABEL_MAX) }))
+  const fits = items.length >= 1 && items.length <= MAX_ACTIONS && items.every((item) => item.label && ACTION_ID.test(item.id))
+  return fits ? items : null
+}
+
+/**
+ * The platform send for an outbound: a fixed title, the body, and one button per option of a choice
+ * card or a worker question (A6). The text never exceeds `textChars`, and the body is cut first so
+ * the tail survives, so the platform cannot answer TOO_LARGE. A card the buttons cannot carry falls
+ * back to a numbered list that points to the AGH page. A question option too long for its button
+ * label is also listed in full, so no part of a choice is lost.
+ * @param {import('./effects.mjs').Outbound} message @param {number} textChars
+ * @returns {{ title: string, text: string, actions?: import('./channel-contract.mjs').ChannelAction[] }}
+ */
+export function compose(message, textChars) {
+  const detail = message.detail ? showLinks(message.detail) : ''
+  const body = detail ? `${message.text}\n\n${detail}` : message.text
+  const title = message.card ? CHANNEL_TITLES.choice : CHANNEL_TITLES.message
+  const actions = buttons(message)
+  const numbered = (items) => items.map((t, i) => `${i + 1}. ${showLinks(t)}`).join('\n')
+  let tail = ''
+  if (message.card) {
+    tail = actions
+      ? `\n\n${BUTTON_POINTER}`
+      : `\n\n${numbered([...message.card.options.map((o) => o.title), ...(message.card.allowNew ? [NEW_TASK_LABEL] : [])])}\n${CHOICE_POINTER}`
+  } else if (message.ask && message.ask.options.some((o) => oneLine(o, LABEL_MAX) !== o)) {
+    tail = `\n\n${numbered(message.ask.options)}`
+  }
+  const room = textChars - tail.length
+  const text = room >= 1 ? clip(body, room) + tail : clip(body + tail, textChars)
+  return { title, text, ...(actions ? { actions } : {}) }
 }
 
 /**
@@ -116,6 +163,31 @@ export async function openChannel({ gateway, store, receive }) {
   /** @param {string} messageId @returns {OutboxEntry | undefined} */
   const outboxByMessage = (messageId) => store.scan('outbox/').find((row) => row.value.messageId === messageId)?.value
 
+  /**
+   * A click is the owner's answer only to a message the companion sent and only to an option that
+   * message offered; anything else is dropped. A click on a worker question must also find that
+   * question still waiting.
+   * @param {Extract<ChannelEvent, { kind: 'action' }>} event
+   * @returns {import('./signals.mjs').InboundSignal | string} the signal, or the reason it is dropped
+   */
+  const clickSignal = (event) => {
+    const row = outboxByMessage(event.messageId)
+    if (!row) return 'not a message the companion sent'
+    const base = { source: `channel:${bound.instanceId}`, eventId: event.eventId, at: event.at, origin: /** @type {const} */ ('owner') }
+    const [verb, rest = ''] = event.actionId.split(/:(.*)/s)
+    if (verb === 'pick' && row.card && (rest === 'new' || row.card.options.some((o) => o.taskId === rest))) return { ...base, kind: 'choice', card: row.deliveryKey, pick: rest }
+    if (verb === 'answer' && row.ask && /^[1-9]\d?$/.test(rest)) {
+      const option = row.ask.options[Number(rest) - 1]
+      const taskId = row.taskIds[0]
+      const task = taskId ? store.getTask(taskId) : undefined
+      if (option === undefined) return 'the action is not an option of that message'
+      if (!task || !isAsking(task) || task.question?.at !== row.ask.at) return 'the question is no longer waiting'
+      // Only the number: the option text is the worker's own words and must not become owner-origin text.
+      return { ...base, kind: 'message', text: rest, replyTo: taskId }
+    }
+    return 'the action is not an option of that message'
+  }
+
   /** @type {ChatChannel} */
   const channel = {
     async receive(raw) {
@@ -126,11 +198,13 @@ export async function openChannel({ gateway, store, receive }) {
       if (!pairing) return { kind: 'dropped', reason: /** @type {string} */ (status) }
       // Strangers stop here, before the inbox, so their volume cannot fill the store.
       if (event.pairingId !== pairing.id || event.chat.id !== pairing.chatId || event.sender.userId !== pairing.userId) return { kind: 'dropped', reason: 'not from the owner' }
-      if (!event.text.trim()) return { kind: 'dropped', reason: 'message has no text' }
-      const result = await receive({
+      if (event.kind === 'message' && !event.text.trim()) return { kind: 'dropped', reason: 'message has no text' }
+      const signal = event.kind === 'action' ? clickSignal(event) : {
         source: `channel:${bound.instanceId}`, eventId: event.eventId, at: event.at, origin: 'owner',
         kind: 'message', text: event.text, ...quoted(event, outboxByMessage),
-      })
+      }
+      if (typeof signal === 'string') return { kind: 'dropped', reason: signal }
+      const result = await receive(signal)
       if (result.kind === 'accepted' || result.kind === 'duplicate') {
         // The owner just wrote, so the chat platform now accepts sends to this chat again.
         unconfirmed = false
@@ -150,7 +224,7 @@ export async function openChannel({ gateway, store, receive }) {
       if (before.state === 'delivered') return { messageId: before.messageId }
       if (before.state === 'pending') throw new Error(`delivery ${key} is still pending at the channel`)
       try {
-        const sent = await gateway.send(pairing.id, { deliveryKey: key, text: render(message, pairing.textChars) })
+        const sent = await gateway.send(pairing.id, { deliveryKey: key, ...compose(message, pairing.textChars) })
         unconfirmed = false
         return sent
       } catch (error) {

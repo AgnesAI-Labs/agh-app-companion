@@ -1,6 +1,6 @@
 /**
  * The chat channel as the companion codes against it: the platform's managed channel targets
- * (Extension API 5.12, `init.channels`), narrowed to the gateway the companion needs. The
+ * (Extension API 5.13, `init.channels`), narrowed to the gateway the companion needs. The
  * companion ships no chat client of its own: the owner pairs this service to a chat on the AGH
  * channel page, and every message in either direction goes through the platform.
  *
@@ -19,11 +19,15 @@
  *       again. The pairing id replaces the old `targetId`.
  *   A4  Instance ids are the platform's; the companion keeps `instanceId` only to bind its store to
  *       one owner.
- *   A5  Quotes: step 1 events carry no `quotedMessageId`. The field is still read when present, so a
- *       platform that adds it maps a quoted reply to its task without a change here.
- *   A6  Clicks: there are no card actions. A choice question is sent as a numbered text list that
- *       points the owner to the AGH Companion page; the owner answers there, or types an answer
- *       that goes to the judge.
+ *   A5  Quotes: a message event carries `quotedMessageId`, the platform id of the message it replies
+ *       to, when the chat app reports one. It is the id `send` returned, so a quote of one of the
+ *       companion's own messages finds that message's outbox row and its task.
+ *   A6  Clicks: `send` takes `title` and 1 to 6 `actions` (`id` of at most 64 characters from
+ *       `[A-Za-z0-9:_-]`, `label` of at most 40, no line break). With actions the chat shows a card
+ *       and a click arrives as `{ kind: 'action', messageId, actionId }`, `messageId` being the
+ *       message the click was on. The platform does not keep the button list: the companion checks
+ *       the `actionId` against that message's own options. A channel without cards gets the labels
+ *       as a numbered text list, so the companion does not add its own list.
  *   A7  Send: `send` resolves `{ messageId }` for one platform message. A rejection means the
  *       outcome is unknown, not that nothing was sent.
  *   A8  Ledger: `delivery(pairingId, deliveryKey)` answers delivered (with the message id), pending
@@ -32,8 +36,8 @@
  *       The platform keeps the record across restarts for 7 days; the key it hands the adapter is
  *       scoped to this package, so only the companion's own keys collide. A key resent after an
  *       `unknown` is the same key, so the chat platform may drop it as a duplicate.
- *   A9  Lock screen: the text body is sent as is and previewed on the owner's own phone. There is
- *       no title-only card in step 1.
+ *   A9  Lock screen: the first line is the `title`, sent as a field so the chat shows it bold, and
+ *       the body is previewed on the owner's own phone.
  *   A10 Binding: managed-sessions `start` takes no chat binding, so `binding()` is not called and
  *       worker approvals are answered in the Web only.
  *   A11 Event ids are at most 128 characters.
@@ -48,9 +52,13 @@
  *
  * @typedef {{ id: string, type: 'dm' }} ChatRef
  * @typedef {{ userId: string }} Sender
+ * @typedef {{ id: string, label: string, style?: 'primary' | 'default' | 'danger' }} ChannelAction
  * @typedef {{
  *   kind: 'message', origin: 'owner', pairingId: string, instanceId: string, eventId: string,
  *   messageId: string, at: string, chat: ChatRef, sender: Sender, text: string, quotedMessageId?: string,
+ * } | {
+ *   kind: 'action', origin: 'owner', pairingId: string, instanceId: string, eventId: string,
+ *   messageId: string, at: string, chat: ChatRef, sender: Sender, actionId: string,
  * }} ChannelEvent  the platform's ChannelTargetEvent
  * @typedef {{
  *   id: string, instanceId: string, provider: string, userId: string, chatId: string, label: string,
@@ -59,7 +67,7 @@
  * @typedef {{ state: 'delivered', messageId: string } | { state: 'pending' } | { state: 'failed' } | { state: 'unknown' }} Delivery
  * @typedef {{
  *   pairing(): Promise<Pairing | undefined>,
- *   send(pairingId: string, input: { deliveryKey: string, text: string }): Promise<{ messageId: string }>,
+ *   send(pairingId: string, input: { deliveryKey: string, text: string, title?: string, actions?: ChannelAction[] }): Promise<{ messageId: string }>,
  *   delivery(pairingId: string, deliveryKey: string): Promise<Delivery>,
  *   unpair(pairingId: string): Promise<void>,
  *   onEvent(handler: (event: unknown) => Promise<void>): void,
@@ -76,23 +84,25 @@ const text = (value, max) => typeof value === 'string' && value.length > 0 && va
 export function parseChannelEvent(raw) {
   if (!isObject(raw)) return { ok: false, error: 'event is not an object' }
   const v = /** @type {Record<string, any>} */ (raw)
-  if (v.kind !== 'message') return { ok: false, error: `event kind ${String(v.kind)} is not a message` }
+  if (v.kind !== 'message' && v.kind !== 'action') return { ok: false, error: `event kind ${String(v.kind)} is not a message or a click` }
   if (v.origin !== 'owner') return { ok: false, error: 'event is not from the owner' }
   if (!text(v.eventId, 128)) return { ok: false, error: 'eventId is missing or too long' }
   if (!text(v.pairingId, 256)) return { ok: false, error: 'pairingId is missing' }
   if (!text(v.at, 64) || Number.isNaN(Date.parse(v.at))) return { ok: false, error: 'at is not a time' }
   if (!isObject(v.chat) || !text(v.chat.id, 256) || v.chat.type !== 'dm') return { ok: false, error: 'chat is not a private chat' }
   if (!isObject(v.sender) || !text(v.sender.userId, 256)) return { ok: false, error: 'sender has no verified id' }
-  if (typeof v.text !== 'string' || !text(v.messageId, 256)) return { ok: false, error: 'message fields are invalid' }
-  if (v.quotedMessageId !== undefined && !text(v.quotedMessageId, 256)) return { ok: false, error: 'quotedMessageId is invalid' }
-  return {
-    ok: true,
-    event: {
-      kind: 'message', origin: 'owner', pairingId: v.pairingId, instanceId: typeof v.instanceId === 'string' ? v.instanceId : '',
-      eventId: v.eventId, messageId: v.messageId, at: v.at, chat: { id: v.chat.id, type: 'dm' }, sender: { userId: v.sender.userId },
-      text: v.text, ...(v.quotedMessageId ? { quotedMessageId: v.quotedMessageId } : {}),
-    },
+  if (!text(v.messageId, 256)) return { ok: false, error: 'messageId is invalid' }
+  const common = {
+    origin: /** @type {const} */ ('owner'), pairingId: v.pairingId, instanceId: typeof v.instanceId === 'string' ? v.instanceId : '',
+    eventId: v.eventId, messageId: v.messageId, at: v.at, chat: { id: v.chat.id, type: /** @type {const} */ ('dm') }, sender: { userId: v.sender.userId },
   }
+  if (v.kind === 'action') {
+    if (!text(v.actionId, 64)) return { ok: false, error: 'actionId is invalid' }
+    return { ok: true, event: { kind: 'action', ...common, actionId: v.actionId } }
+  }
+  if (typeof v.text !== 'string') return { ok: false, error: 'message fields are invalid' }
+  if (v.quotedMessageId !== undefined && !text(v.quotedMessageId, 256)) return { ok: false, error: 'quotedMessageId is invalid' }
+  return { ok: true, event: { kind: 'message', ...common, text: v.text, ...(v.quotedMessageId ? { quotedMessageId: v.quotedMessageId } : {}) } }
 }
 
 /** @param {unknown} value @returns {value is Pairing} */

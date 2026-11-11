@@ -1,7 +1,7 @@
 import { isPairing, REFUSAL_CODES } from './channel-contract.mjs'
 
 /**
- * The one place `init.channels` (the platform's ManagedChannelTargets, Extension API 5.12) meets the
+ * The one place `init.channels` (the platform's ManagedChannelTargets, Extension API 5.13) meets the
  * companion's gateway port. A change in the platform's types touches this file only.
  *
  * A refusal is an error carrying a fixed `code`, on the error itself or in an RPC error's `data`.

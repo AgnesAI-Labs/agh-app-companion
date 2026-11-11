@@ -1,7 +1,7 @@
 import { SLOT_STATES } from './machine.mjs'
 import { PUBLISH_TOOL_NAME, publishedPullRequest, pullRequestFailure } from './publish.mjs'
 import { handbackReason } from './signals.mjs'
-import { allTasks, choiceCard, dispose, enqueueMessage, getTask, isAsking, label, questionText, TEXT, transit } from './tasks.mjs'
+import { allTasks, choiceCard, dispose, enqueueMessage, getTask, isAsking, label, TEXT, transit } from './tasks.mjs'
 import { recentConversation } from './context.mjs'
 
 /**
@@ -152,10 +152,12 @@ function apply(tx, taskId, event, reply) {
 function asked(tx, taskId) {
   if (!transit(tx, taskId, 'sessionAsked')) return
   const task = getTask(tx, taskId)
+  const question = /** @type {import('./tasks.mjs').Question} */ (task.question)
   enqueueMessage(tx, {
     deliveryKey: `ask:${taskId}:${task.eventSeq}`,
     text: `${label(task)}：${TEXT.asked}`,
-    detail: questionText(/** @type {import('./tasks.mjs').Question} */ (task.question)),
+    detail: question.text,
+    ...(question.options.length ? { ask: { options: question.options, at: question.at } } : {}),
     taskIds: [taskId],
   })
 }

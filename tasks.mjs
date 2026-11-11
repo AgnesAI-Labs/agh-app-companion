@@ -32,9 +32,10 @@ import { namesOtherWorkspace } from './signals.mjs'
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
  * @typedef {{
  *   deliveryKey: string, at: string, text: string, detail: string | null, card: ChoiceCard | null, taskIds: string[],
- *   about: string | null, sentAt: string | null, messageId: string | null,
+ *   about: string | null, sentAt: string | null, messageId: string | null, ask?: AskMark | null,
  * }} OutboxEntry  text is written by code or the judge; detail carries worker output, shown to the owner
  *   only and never read back into the judge's recent conversation
+ * @typedef {{ options: string[], at: string }} AskMark  the options of a worker question, and the `at` of that question on its task, so a click on a stale question can be told from a live one
  * @typedef {{ store: import('./store.mjs').Store, at: string, limits: import('./limits.mjs').Limits, workspaces: readonly string[] }} Tx
  */
 
@@ -83,9 +84,6 @@ export const stateText = (task) =>
 export const label = (task) => `${task.id}（${task.workspace}）${task.title}`
 /** A task waiting for the owner's answer to its own ask_owner question. @param {Pick<Task, 'state' | 'question'>} task */
 export const isAsking = (task) => task.state === 'waiting' && Boolean(task.question)
-/** The owner-visible text of a question: the question, then its options numbered the way an answer names them. @param {Question} question */
-export const questionText = ({ text, options }) =>
-  options.length ? `${text}\n\n${options.map((option, i) => `${i + 1}. ${option}`).join('\n')}` : text
 const DETAIL_MAX = 8000
 const clip = (value) => ([...value].length > DETAIL_MAX ? `${[...value].slice(0, DETAIL_MAX).join('')}…` : value)
 export const hash = (value) => createHash('sha256').update(value).digest('hex')
@@ -123,12 +121,12 @@ function enqueueOp(tx, op) {
   tx.store.set(`op/${String(seq).padStart(9, '0')}`, { seq, ...op })
 }
 
-/** Records an outbound message once per delivery key. @param {Tx} tx @param {{ deliveryKey: string, text: string, detail?: string, card?: ChoiceCard, taskIds?: string[], about?: string }} message */
-export function enqueueMessage(tx, { deliveryKey, text, detail, card, taskIds = [], about }) {
+/** Records an outbound message once per delivery key. @param {Tx} tx @param {{ deliveryKey: string, text: string, detail?: string, card?: ChoiceCard, ask?: AskMark, taskIds?: string[], about?: string }} message */
+export function enqueueMessage(tx, { deliveryKey, text, detail, card, ask, taskIds = [], about }) {
   const key = `outbox/${deliveryKey}`
   if (tx.store.get(key)) return
   /** @type {OutboxEntry} */
-  const entry = { deliveryKey, at: tx.at, text, detail: detail ? clip(detail) : null, card: card ?? null, taskIds, about: about ?? null, sentAt: null, messageId: null }
+  const entry = { deliveryKey, at: tx.at, text, detail: detail ? clip(detail) : null, card: card ?? null, taskIds, about: about ?? null, sentAt: null, messageId: null, ...(ask ? { ask } : {}) }
   tx.store.set(key, /** @type {any} */ (entry))
 }
 
