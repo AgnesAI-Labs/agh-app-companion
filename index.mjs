@@ -4,6 +4,8 @@ import { buildDesk, deskServices, submitDesk } from './desk.mjs'
 import { createEngine } from './engine.mjs'
 import { LIMITS, withCaps } from './limits.mjs'
 import { platformSessions, SessionRefusal } from './platform-sessions.mjs'
+import { gitReadTool } from './git-read.mjs'
+import { githubReadTool } from './github.mjs'
 import { publishPlanTool, publishTool } from './publish.mjs'
 import { DEFAULT_SETTINGS, missingSettings, parseSettings, SETTINGS_SCHEMA } from './settings.mjs'
 import { openStore } from './store.mjs'
@@ -338,5 +340,7 @@ export const main = {
     for (const service of deskServices(() => handle.get())) ctx.services.register(service)
     ctx.tools.register(publishPlanTool())
     ctx.tools.register(publishTool())
+    ctx.tools.register(githubReadTool())
+    ctx.tools.register(gitReadTool())
   },
 }

@@ -30,12 +30,12 @@ const REMOTE = 'origin'
  *   `find` answers only with an open PR in `repo` whose head is `repo`'s own branch at exactly `commit`.
  */
 
-const Kind = Symbol.for('TypeBox.Kind')
-const str = (/** @type {Record<string, unknown>} */ extra) => ({ [Kind]: 'String', type: 'string', ...extra })
+export const Kind = Symbol.for('TypeBox.Kind')
+export const str = (/** @type {Record<string, unknown>} */ extra) => ({ [Kind]: 'String', type: 'string', ...extra })
 // No leading '-', no '..', '//', '@{' or '.lock' component, no trailing '/' or '.': a strict subset of
 // git's ref rules, so a branch can never be read as an option or a revision expression.
-const BRANCH = /^(?!.*\.\.)(?!.*\/\/)(?!.*@\{)(?!.*\.lock(?:\/|$))[A-Za-z0-9][A-Za-z0-9._/-]{0,99}(?<![./])$/
-const BRANCH_SCHEMA = { pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' }
+export const BRANCH = /^(?!.*\.\.)(?!.*\/\/)(?!.*@\{)(?!.*\.lock(?:\/|$))[A-Za-z0-9][A-Za-z0-9._/-]{0,99}(?<![./])$/
+export const BRANCH_SCHEMA = { pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' }
 // biome-ignore lint/suspicious/noControlCharactersInRegex: one line of text; control characters are what it refuses.
 const ONE_LINE = /^[^\u0000-\u001f\u007f]+$/
 const TREE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -217,10 +217,10 @@ const secretLooking = (path) =>
   SECRET_NAME.test(path.slice(path.lastIndexOf('/') + 1)) || SECRET_DIR.test(path)
 
 /** @type {(reason: RefusalReason, detail: string, extra?: Partial<Refused>) => Refused} */
-const refuse = (reason, detail, extra = {}) => ({ status: 'refused', reason, detail, ...extra })
+export const refuse = (reason, detail, extra = {}) => ({ status: 'refused', reason, detail, ...extra })
 
 /** @param {string} root @param {AbortSignal | undefined} signal */
-const gitIn =
+export const gitIn =
   (root, signal) =>
   (/** @type {string[]} */ args, /** @type {RunOptions} */ options = {}) =>
     run('git', args, { cwd: root, signal, ...options })
@@ -639,7 +639,7 @@ export function ghPullRequests({ command = 'gh', env } = {}) {
  * @param {import('@agnes/extension-api').ToolContext} ctx
  * @param {{ status: string, reason?: string }} result
  */
-function toolResult(ctx, name, result) {
+export function toolResult(ctx, name, result) {
   ctx.log.info(name, { status: result.status, ...(result.reason ? { reason: result.reason } : {}) })
   return {
     content: [{ type: /** @type {const} */ ('text'), text: JSON.stringify(result) }],
@@ -708,16 +708,20 @@ export function publishTool({ prs = ghPullRequests() } = {}) {
 }
 
 // Workspace files are written by the worker session; nothing in them may run here with the owner's
-// credentials. Hooks and fsmonitor are the programs git would start on its own. Set in the
-// environment, the override also reaches the git that gh starts.
+// credentials. Hooks and fsmonitor are the programs git would start on its own, and a bare-repository
+// layout (HEAD, config, objects, refs) the worker writes at the root would be read as a repository, so
+// only an explicit --git-dir or a .git entry names one. Set in the environment, the override also
+// reaches the git that gh starts.
 const GIT_SAFETY_ENV = {
-  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_COUNT: '3',
   GIT_CONFIG_KEY_0: 'core.hooksPath',
   GIT_CONFIG_VALUE_0: '/dev/null',
   GIT_CONFIG_KEY_1: 'core.fsmonitor',
   GIT_CONFIG_VALUE_1: 'false',
+  GIT_CONFIG_KEY_2: 'safe.bareRepository',
+  GIT_CONFIG_VALUE_2: 'explicit',
 }
-const NETWORK_MS = 120_000
+export const NETWORK_MS = 120_000
 const MAX_OUTPUT = 1 << 20
 
 /**
@@ -727,7 +731,7 @@ const MAX_OUTPUT = 1 << 20
  * The user name ends at the first `:`, the password at the last `@` of the authority.
  * @param {string} text
  */
-function withoutCredentials(text) {
+export function withoutCredentials(text) {
   return text
     .replace(/(https?:\/\/)[^\s/]*@/gi, '$1')
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:]*):[^\s/]*@/gi, '$1@')
@@ -739,7 +743,7 @@ function withoutCredentials(text) {
  * @param {string} url
  * @returns {{ remote: string, repo: string } | undefined}
  */
-function parseRemote(url) {
+export function parseRemote(url) {
   const full = URL_REMOTE.exec(url)
   if (full) {
     const [, , , host, owner, name] = full
@@ -800,7 +804,7 @@ export function pullRequestFailure(text) {
 }
 
 /** @param {string} text */
-function tail(text) {
+export function tail(text) {
   const clean = withoutCredentials(text).trim()
   return clean.length > 500 ? `…${clean.slice(-500)}` : clean
 }
@@ -821,7 +825,7 @@ function tail(text) {
  * @param {RunOptions} options
  * @returns {Promise<RunResult>}
  */
-function run(command, args, { cwd, env, input, signal, timeoutMs = 60_000, keep }) {
+export function run(command, args, { cwd, env, input, signal, timeoutMs = 60_000, keep }) {
   const base = { ...process.env }
   for (const name of Object.keys(base))
     if (
