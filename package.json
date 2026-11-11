@@ -1,6 +1,6 @@
 {
   "name": "@agh-apps/companion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "Apache-2.0",
   "keywords": [
@@ -467,6 +467,7 @@
         "profile": {
           "toolPolicy": {
             "deny": [
+              "ask_user_question",
               "skill_helper_create",
               "skill_helper_import",
               "skill_helper_install"
