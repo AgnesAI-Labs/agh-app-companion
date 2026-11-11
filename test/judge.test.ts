@@ -139,6 +139,7 @@ describe('judge batches replayed from fixed model outputs', () => {
     expect(h.tasks()).toEqual([expect.objectContaining({ id: 'T-0001', workspace: 'web', title: '首页标题', brief: '把官网首页标题改成新口号', state: 'running' })])
     expect(h.workers()[0]!.request).toMatchObject({ workspace: '/w/web', startKey: 'T-0001:0', permission: 'full-access' })
     expect(h.workers()[0]!.inputs[0]).toContain(TEXT.worker)
+    expect(TEXT.worker).toContain('主人只看聊天')
     expect(h.channel.texts()).toContain('已新建 T-0001（web）首页标题：进行中')
   })
 
