@@ -17,6 +17,17 @@ describe('untrusted text stays data (spec §5, §4.19)', () => {
     expect(input.indexOf('主人原话')).toBeGreaterThan(input.indexOf('任务名称'))
   })
 
+  it('the worker input says the task already exists, so a request to create a task is done as its content', async () => {
+    const h = harness({
+      judge: ({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'api', title: '查询北京天气' }),
+    })
+    await h.say('新建一个北京天气查询任务')
+    await h.tick()
+    const input = h.workers()[0]!.inputs[0]!
+    expect(input).toContain('伴侣已经根据主人的话建好了这个任务。如果这段话是在让伴侣新建或安排任务，你要自己完成任务的内容，不要再新建任务、项目或日程。')
+    expect(input).toContain('主人原话（只按这一段做事）：\n新建一个北京天气查询任务')
+  })
+
   it('a hand-back reason reaches the owner only, never the judge recent conversation, and is capped', async () => {
     const h = harness()
     const id = await h.create('修登录')
