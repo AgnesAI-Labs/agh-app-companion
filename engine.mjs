@@ -8,7 +8,7 @@ import { reconcile } from './reconcile.mjs'
 import { startRequest } from './sessions.mjs'
 import { parseSignal, route } from './signals.mjs'
 import {
-  allTasks, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, label, noteRefusal, stateText,
+  allTasks, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, isAsking, label, noteRefusal, stateText,
   statusText, TEXT, transit,
 } from './tasks.mjs'
 
@@ -43,6 +43,23 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
   const routing = {
     exists: (id) => store.getTask(id) !== undefined,
     byPrUrl: (body) => allTasks(tx()).find((t) => t.prUrl && body.includes(t.prUrl))?.id,
+    asking: () => allTasks(tx()).filter(isAsking).map((t) => ({ id: t.id, options: /** @type {import('./tasks.mjs').Question} */ (t.question).options })),
+  }
+
+  /**
+   * ask_owner: records the question on the running task that owns the session. The turn's end, read
+   * by reconcile, is what puts the task to waiting and tells the owner.
+   * @param {string} sessionKey @param {{ text: string, options: string[] }} question
+   * @returns {{ ok: true, taskId: string } | { ok: false }}
+   */
+  function askOwner(sessionKey, { text, options }) {
+    const t = tx()
+    return t.store.transaction(() => {
+      const task = allTasks(t).find((candidate) => candidate.state === 'running' && candidate.sessionId === sessionKey)
+      if (!task) return /** @type {const} */ ({ ok: false })
+      t.store.putTask({ ...task, question: { text, options, at: t.at, generation: task.generation } })
+      return /** @type {const} */ ({ ok: true, taskId: task.id })
+    })
   }
   // Oldest first, so whoever answered a card first wins whatever the sources' key order is.
   const pending = () =>
@@ -278,6 +295,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
 
   return Object.freeze({
     receive,
+    askOwner,
     /** Session facts into the table, as at the start of a tick; the service runs it once at start. */
     reconcile: () => reconcile(effects),
     /** One pass of the engine; each step resumes from the store. */

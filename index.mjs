@@ -1,3 +1,4 @@
+import { askOwnerTool } from './ask-owner.mjs'
 import { channelGateway } from './channel-targets.mjs'
 import { openChannel } from './channel.mjs'
 import { buildDesk, deskServices, submitDesk } from './desk.mjs'
@@ -316,6 +317,11 @@ export async function startEngine(
      * @param {unknown} raw
      */
     receive,
+    /**
+     * ask_owner's write: the question of the running task that owns this worker session.
+     * @param {string} sessionKey @param {{ text: string, options: string[] }} question
+     */
+    askOwner: (sessionKey, question) => (engine && !stopped ? engine.askOwner(sessionKey, question) : { ok: false }),
     /** Ends the service's pairing from the task desk; the platform needs no approval to revoke. */
     async unpair() {
       const pairing = await gateway?.pairing()
@@ -338,6 +344,7 @@ export const main = {
       start: startEngine,
     })
     for (const service of deskServices(() => handle.get())) ctx.services.register(service)
+    ctx.tools.register(askOwnerTool(() => handle.get()))
     ctx.tools.register(publishPlanTool())
     ctx.tools.register(publishTool())
     ctx.tools.register(githubReadTool())

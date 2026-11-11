@@ -134,6 +134,9 @@ describe('companion.desk query', () => {
     expect((await desk.view()).tasks.needsYou[0].wait).toBe('question')
     h.sessions.lose(h.sessionOf(waiting))
     expect((await desk.view()).tasks.needsYou[0]).toMatchObject({ wait: 'unreadable', sessionState: 'missing' })
+    // A task waiting on its own ask_owner question shows as a question whatever its session reports.
+    h.store.putTask({ ...h.task(waiting), question: { text: '用哪个？', options: ['甲', '乙'], at: h.now(), generation: 0 } })
+    expect((await desk.view()).tasks.needsYou[0]).toMatchObject({ wait: 'question' })
     // Ended tasks leave "recent results" after 7 days and then sit in the collapsed group.
     h.advance(8 * DAY)
     const later = await desk.view()

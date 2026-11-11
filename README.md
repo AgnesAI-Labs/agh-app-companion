@@ -106,6 +106,17 @@ output are cut at 200 KB, `status` at 2000 entries and `blame` at 500 lines, and
 `truncated`. A `.gitattributes` clean filter named in your own git config (git-lfs, for example)
 can still run, because the workspace can only select such a filter, not define one.
 
+### Asking you a question
+
+You only see the chat, so a worker that needs a decision calls `ask_owner` with a question and, when
+there are clear choices, 2 to 6 options, then ends its turn. The task shows as 等你 and one message
+says 等你回答, with the question and the numbered options below it. Answer in the chat. A message that
+is just an option number (`1`, `选2`, `2。`) or an option's exact text goes straight to that task's
+session when it is the only task waiting on a question; anything else, such as a new request, goes to
+the judge as usual, and with two or more tasks waiting every answer does. Replying to the message,
+naming the task or its PR link also works. A worker that writes a question only in its reply still
+finishes as done. `ask_owner` refuses a session that is not a running task session.
+
 ### Pauses without an approval
 
 - A worker session that cannot be started for a reason the platform names (a folder not granted,

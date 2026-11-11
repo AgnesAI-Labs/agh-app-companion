@@ -46,7 +46,7 @@ const button = (h: ReturnType<typeof harness>, action: string, taskId: string) =
 
 describe('state table (spec §4.3), one test per row', () => {
   it('has a row for every spec row plus the queue and return rows', () => {
-    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(22)
+    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(23)
   })
 
   it('proposed, owner confirms: running, and its session starts', async () => {

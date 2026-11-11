@@ -1,5 +1,5 @@
 import { UNFINISHED } from './machine.mjs'
-import { allTasks } from './tasks.mjs'
+import { allTasks, isAsking } from './tasks.mjs'
 
 /**
  * What each judge batch sees besides the batch itself (§4.19). Both hold only fields the service
@@ -9,7 +9,7 @@ import { allTasks } from './tasks.mjs'
  * @typedef {{
  *   workspaces: string[],
  *   tasks: { id: string, title: string, workspace: string, state: string, reason: string | null,
- *     createdAt: string, updatedAt: string, prUrl: string | null, session: SessionView,
+ *     createdAt: string, updatedAt: string, prUrl: string | null, session: SessionView, asking?: true,
  *     usage: { tokens: number | null, cost: number | null } }[],
  *   omitted: number, counts: Record<string, number>,
  *   today: { tokens: number, cost: number, unknown: boolean, costCap: number | null },
@@ -36,6 +36,7 @@ export function snapshot(tx, sessions) {
       id: t.id, title: t.title, workspace: t.workspace, state: t.state, reason: t.reason,
       createdAt: t.createdAt, updatedAt: t.updatedAt, prUrl: t.prUrl,
       session: t.sessionId ? (sessions.get(t.sessionId) ?? null) : null, usage: t.usage,
+      ...(isAsking(t) ? { asking: true } : {}),
     })),
     omitted: listed.length - shown.length,
     counts,

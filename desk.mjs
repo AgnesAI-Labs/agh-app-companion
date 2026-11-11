@@ -1,6 +1,6 @@
 import { SLOT_STATES } from './machine.mjs'
 import { isPullOf } from './publish.mjs'
-import { allTasks } from './tasks.mjs'
+import { allTasks, isAsking } from './tasks.mjs'
 
 /**
  * The task desk's two profile services (plan item A5): `companion.desk`, one read for the whole
@@ -328,7 +328,7 @@ function taskView(t, rows, readable, holders, waiting, prRepo) {
   const session = live ? { kind: live.status.kind, flags: [...live.status.flags] } : null
   const sessionState = !t.sessionId ? 'none' : !readable ? 'unreadable' : live ? 'ok' : 'missing'
   const flags = session?.flags ?? []
-  const wait = t.state !== 'waiting' ? null : flags.includes('waitingOnApproval') ? 'approval' : flags.includes('waitingOnUserInput') ? 'question' : 'unreadable'
+  const wait = t.state !== 'waiting' ? null : isAsking(t) ? 'question' : flags.includes('waitingOnApproval') ? 'approval' : flags.includes('waitingOnUserInput') ? 'question' : 'unreadable'
   const repo = t.prUrl ? prRepo(t) : undefined
   const line = waiting.get(t.workspace) ?? []
   const place = t.state === 'queued' ? line.indexOf(t.id) : -1

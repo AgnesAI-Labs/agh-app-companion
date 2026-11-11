@@ -63,7 +63,8 @@ export function mentionedTasks(body, exists) {
  * The split before the judge: replies, task ids, PR links, buttons, choices and control commands
  * are handled by code; the rest goes to the judge batch.
  * @param {InboundSignal} signal
- * @param {{ exists: (id: string) => boolean, byPrUrl: (body: string) => string | undefined }} tasks
+ * @param {{ exists: (id: string) => boolean, byPrUrl: (body: string) => string | undefined,
+ *   asking: () => { id: string, options: readonly string[] }[] }} tasks  asking = the tasks waiting on their own ask_owner question
  * @returns {Route}
  */
 export function route(signal, tasks) {
@@ -87,7 +88,26 @@ export function route(signal, tasks) {
   if (ids.length === 1 && onCard(ids[0])) return { kind: 'attach', taskId: ids[0] }
   const linked = ids.length ? undefined : tasks.byPrUrl(signal.text)
   if (linked && onCard(linked)) return { kind: 'attach', taskId: linked }
+  // One waiting question is not enough to claim a message: it must be the answer itself.
+  if (!signal.candidates) {
+    const asking = tasks.asking()
+    if (asking.length === 1 && isAnswer(signal.text, asking[0].options)) return { kind: 'attach', taskId: asking[0].id }
+  }
   return { kind: 'batch' }
+}
+
+// The only decorations an answer may carry: a leading 选, a trailing . or 。.
+const NUMBERED = /^选?\s*([1-9]\d?)\s*[.。]?$/
+
+/**
+ * Whether a message is an explicit answer to a question with these options: one option number in
+ * range, or an option's own text. Anything else is left to the judge.
+ * @param {string} body @param {readonly string[]} options
+ */
+export function isAnswer(body, options) {
+  const said = body.trim()
+  const number = Number(said.match(NUMBERED)?.[1])
+  return (number >= 1 && number <= options.length) || options.includes(said)
 }
 
 const wordIn = (body, word) =>
