@@ -25,7 +25,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  * @typedef {{ tokens: number | null, cost: number | null }} Usage  null = not known, never 0; reading = current session's last report;
  *   budgetBase = usage when the owner last continued a budget pause, so the task cap counts from there
  * @typedef {{ seq: number, taskId: string } & (
- *   { kind: 'start', generation: number, input: string }
+ *   { kind: 'start', generation: number, input: string, failures?: number }
  *   | { kind: 'send', input: string, key: string, inbox: string | null, busyNoticed: boolean }
  *   | { kind: 'interrupt' })} SessionOp
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard

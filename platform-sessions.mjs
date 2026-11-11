@@ -12,6 +12,9 @@
  *   text is the owner's notice; a retryable refusal has none because it is never told
  */
 
+/** Failed starts of one task generation, other than refusals, before the task is parked. */
+export const START_ATTEMPTS = 3
+
 /** @type {Readonly<Record<string, RefusalRule>>} */
 export const REFUSALS = Object.freeze({
   // The start was left unstarted behind a running turn; the same key queues it once the turn ends.
@@ -57,6 +60,12 @@ export const REFUSALS = Object.freeze({
     retryable: false,
     scope: 'start',
     text: () => '这个任务的会话已归档。对任务说“继续”会换一个新会话。',
+  },
+  // Not a platform code: the companion's own refusal after repeated start errors it cannot name.
+  START_FAILED: {
+    retryable: false,
+    scope: 'start',
+    text: ({ missing }) => `开会话连续失败 ${START_ATTEMPTS} 次，已停下：${missing ?? '未知错误'}。对任务说“继续”会换一个新会话再试。`,
   },
   CAPABILITY_DENIED: {
     retryable: false,

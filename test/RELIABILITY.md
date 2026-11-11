@@ -19,6 +19,10 @@ To check the table mechanically: every `test/...` file and test name in the tabl
 | test/recovery.test.ts | during the effects, after the call and before its mark: replay by key does not repeat it | start and channel delivery replayed by key: no second session, no second message |
 | test/reliability.test.ts | a task parked by a platform refusal stays parked and silent across restarts | restart does not retry a refused start and does not repeat the owner notice |
 | test/refusals.test.ts | %s on a worker start: the task parks and the owner gets exactly one message | every non-retryable refusal code (WORKSPACE_NOT_AUTHORIZED, FULL_ACCESS_UNAVAILABLE, MODEL_ROUTE_MISSING, AUTO_REVIEW, BUNDLE_UNAVAILABLE, ...) parks the task as paused (platform), one owner message, no op left |
+| test/refusals.test.ts | parks the task after three failed starts, across restarts, and tells the owner once | **fix**: an error that is not a platform refusal used to be retried on every pass, forever and silently; the count lives on the start op, so a restart keeps it |
+| test/refusals.test.ts | a start that works after two failures keeps the task running and leaves no op | a success ends the count |
+| test/refusals.test.ts | a new generation after continue gets three fresh attempts | continue opens a new op with a new count |
+| test/refusals.test.ts | does not count a busy start | SESSION_BUSY stays an unlimited, silent wait |
 | test/refusals.test.ts | a busy start is retried with the same key and tells the owner nothing | SESSION_BUSY: same startKey, no notice, task runs |
 | test/refusals.test.ts | an unauthorized workspace is told once; a task queued behind it gets only its own pause notice | one notice per workspace episode, refusal record lists both tasks |
 | test/refusals.test.ts | full access refused in two workspaces is one message | platform-scope refusal told once |
