@@ -32,7 +32,7 @@ and the chat channel adapter over the platform's channel targets.
 
 These steps come from the real-daemon run in an isolated home (see "Prove it on a real daemon"
 below). They need an Agnes Harness build with plugin-managed sessions (agnes-harness `develop` at
-`e30254dd9` or later, which contains
+`93c3e4776` or later, which has channel targets, Extension API 5.12 and the plugin live-reload fix, and contains
 [agnes-harness#633](https://github.com/AgnesAI-Labs/agnes-harness/pull/633)) and a working model
 route.
 
@@ -75,6 +75,20 @@ route.
    asks the worker to run `publish` again, which waits for your approval like the first time. Three
    rejections from a person pause the task. Approvals decided by the full-access policy do not
    count.
+
+### Reading GitHub pull requests and CI
+
+A worker session cannot reach GitHub itself: its sandbox denies `.git`, shell network and `gh`
+credentials. The read-only `github_read` tool answers instead, running in the plugin process with
+your own `gh` login. It has four actions: `pr_list` (state, limit, base, author), `pr_view`,
+`pr_checks` and `pr_diff` (the last three take a pull request number). It reads only the
+repository of the session workspace, taken from the fetch URL of `origin`; no parameter names a
+repository or passes arguments to `gh`. Long pull request bodies, comments and diffs are cut and
+marked `truncated`.
+
+The results go to the cloud model and may come back in the task result. For a private repository
+that means pull request content leaves your machine. Pull request text is written by other people;
+the tool tells the model to treat it as data, not as instructions.
 
 ### Pauses without an approval
 

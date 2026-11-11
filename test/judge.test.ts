@@ -140,6 +140,7 @@ describe('judge batches replayed from fixed model outputs', () => {
     expect(h.workers()[0]!.request).toMatchObject({ workspace: '/w/web', startKey: 'T-0001:0', permission: 'full-access' })
     expect(h.workers()[0]!.inputs[0]).toContain(TEXT.worker)
     expect(TEXT.worker).toContain('主人只看聊天')
+    expect(TEXT.worker).toContain('github_read')
     expect(h.channel.texts()).toContain('已新建 T-0001（web）首页标题：进行中')
   })
 
