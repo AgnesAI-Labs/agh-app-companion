@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { managedServiceCapabilities } from '../../../../packages/extension-api/src/index.js'
+import { capabilityEnabled, resolveSessionCapabilities } from '../../../../packages/host/src/runtime/profile/session-capabilities.js'
 import { resolvePreset } from '../../../../packages/host-common/src/presets/resolve.js'
 import { parse as parseYaml } from '../../../../packages/host-common/node_modules/yaml/dist/index.js'
 import {
@@ -155,11 +156,22 @@ describe('role Bundles through the platform preset resolver', () => {
     expect(resolvePreset('companion-judge', docs).view.tools.allow).toEqual([])
   })
 
-  it('declares a deny of the skill install tools in the worker session patch (N9; not proven to bind at runtime)', () => {
+  it('denies the Web-only question tool and the skill install tools to the worker (N9)', () => {
     expect(pkg.agnes.bundles.worker.profile.toolPolicy.deny).toEqual([
+      'ask_user_question',
       'skill_helper_create',
       'skill_helper_import',
       'skill_helper_install',
     ])
+  })
+
+  it('hides ask_user_question from a worker session once the platform resolves the bundle tool policy', () => {
+    const tools = ['ask_user_question', 'publish', 'ui_render'].map((name) => ({ name, readOnly: false }))
+    const resolved = resolveSessionCapabilities({
+      selection: { toolPolicy: pkg.agnes.bundles.worker.profile.toolPolicy },
+      installed: { tools },
+    } as never)
+    expect(capabilityEnabled(resolved.tools, 'publish')).toBe(true)
+    expect(capabilityEnabled(resolved.tools, 'ask_user_question')).toBe(false)
   })
 })
