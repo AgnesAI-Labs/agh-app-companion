@@ -47,7 +47,7 @@ export const TEXT = Object.freeze({
   judgeDown: '判断模型连续不可用，你的消息还在排队，恢复后会处理。',
   busy: '会话正忙，这条先存着，空闲后送进去。',
   approvalWaiting: '在等你审批，请到电脑上处理。',
-  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，不要自己跑 gh、curl 或读 .git。主人只看聊天，看不到网页界面：需要主人决定时，在回复里直接写出问题和编号选项，主人会在聊天里回答。',
+  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，需要看本地的提交历史、状态和差异时调用 git_read，不要自己跑 gh、curl、git log、git diff、git status 或读 .git。主人只看聊天，看不到网页界面：需要主人决定时，在回复里直接写出问题和编号选项，主人会在聊天里回答。',
   attach: '先判断这条和本任务有没有关系，无关就只回一行“退回：原因”，不要动手。',
   resume: '上一回合中断了，请从中断处继续。',
   continue: '主人让你继续。',

@@ -90,6 +90,22 @@ The results go to the cloud model and may come back in the task result. For a pr
 that means pull request content leaves your machine. Pull request text is written by other people;
 the tool tells the model to treat it as data, not as instructions.
 
+### Reading local git history, status and diffs
+
+The same sandbox denies a worker session its own `.git`, so `git log` and `git diff` fail there.
+The read-only `git_read` tool answers from the plugin process. It has five actions: `status`,
+`log` (limit, ref, path), `diff` (working tree against `HEAD` by default, or `staged`, or `from`
+and `to`; optional path), `show` (a ref) and `blame` (a path, optional ref and line range, at most
+500 lines; committed history only, `HEAD` when no ref is given, never the working tree). It reads only the session workspace, which must be the top level of a git repository.
+Refs are `HEAD`, `HEAD~N`, `HEAD^`, a branch or tag name, or a commit id; paths are relative and
+never under `.git`. Commit authors appear by name, never by email.
+
+It never fetches, never writes the index, never starts an external diff or textconv program, a
+pager or a hook, never enters submodules, and takes no free-form git argument. Diffs and `show`
+output are cut at 200 KB, `status` at 2000 entries and `blame` at 500 lines, and the result says
+`truncated`. A `.gitattributes` clean filter named in your own git config (git-lfs, for example)
+can still run, because the workspace can only select such a filter, not define one.
+
 ### Pauses without an approval
 
 - A worker session that cannot be started for a reason the platform names (a folder not granted,
