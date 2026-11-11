@@ -1,6 +1,6 @@
 {
   "name": "@agh-apps/companion",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "license": "Apache-2.0",
   "keywords": [
@@ -14,6 +14,7 @@
   "exports": "./index.mjs",
   "files": [
     "index.mjs",
+    "ask-owner.mjs",
     "publish.mjs",
     "github.mjs",
     "git-read.mjs",
@@ -40,7 +41,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check publish.mjs && node --check github.mjs && node --check git-read.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check desk.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel-targets.mjs && node --check channel.mjs && node --check client/index.js && node --check client/settings-save.js && node --check client/desk.js && node --check client/desk-text.js",
+    "build": "node --check index.mjs && node --check ask-owner.mjs && node --check publish.mjs && node --check github.mjs && node --check git-read.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check desk.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel-targets.mjs && node --check channel.mjs && node --check client/index.js && node --check client/settings-save.js && node --check client/desk.js && node --check client/desk-text.js",
     "test": "sh scripts/companion-test.sh"
   },
   "agnes": {
@@ -66,6 +67,7 @@
           "tools": {
             "prefix": "",
             "names": [
+              "ask_owner",
               "git_read",
               "github_read",
               "publish",

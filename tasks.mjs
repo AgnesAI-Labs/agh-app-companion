@@ -18,7 +18,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   state: TaskState, reason: StateReason | null, origin: { kind: 'owner', inbox: string[] }, hops: number,
  *   sessionId: string | null, generation: number, cursor: number, resumed: number, refusals: number,
  *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, repo: string | null, publishCalls: number[], prFailed: string | null,
- *   attach: AttachMark | null,
+ *   attach: AttachMark | null, question?: Question | null,
  *   eventSeq: number, createdAt: string, updatedAt: string, endedAt: string | null, eventChunks: number,
  *   compacted: { events: number, firstAt: string | null, lastAt: string | null } | null,
  * }} Task
@@ -28,6 +28,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   { kind: 'start', generation: number, input: string, failures?: number }
  *   | { kind: 'send', input: string, key: string, inbox: string | null, busyNoticed: boolean }
  *   | { kind: 'interrupt' })} SessionOp
+ * @typedef {{ text: string, options: string[], at: string, generation: number }} Question  what the worker asked through ask_owner; kept until the owner answers or the task leaves waiting
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
  * @typedef {{
  *   deliveryKey: string, at: string, text: string, detail: string | null, card: ChoiceCard | null, taskIds: string[],
@@ -47,7 +48,8 @@ export const TEXT = Object.freeze({
   judgeDown: '判断模型连续不可用，你的消息还在排队，恢复后会处理。',
   busy: '会话正忙，这条先存着，空闲后送进去。',
   approvalWaiting: '在等你审批，请到电脑上处理。',
-  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，需要看本地的提交历史、状态和差异时调用 git_read，不要自己跑 gh、curl、git log、git diff、git status 或读 .git。主人只看聊天，看不到网页界面：需要主人决定时，在回复里直接写出问题和编号选项，主人会在聊天里回答。',
+  asked: '等你回答',
+  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，需要看本地的提交历史、状态和差异时调用 git_read，不要自己跑 gh、curl、git log、git diff、git status 或读 .git。主人只看聊天，看不到网页界面：需要主人决定时，调用 ask_owner 工具，把问题和编号选项交给伴侣，然后结束本轮回复；主人的回答会作为下一条消息送来。',
   attach: '先判断这条和本任务有没有关系，无关就只回一行“退回：原因”，不要动手。',
   resume: '上一回合中断了，请从中断处继续。',
   continue: '主人让你继续。',
@@ -79,6 +81,11 @@ const NOTIFY = new Set(['done', 'failed', 'paused', 'expired'])
 export const stateText = (task) =>
   `${STATE_TEXT[task.state]}${task.reason ? `（${REASON_TEXT[task.reason]}）` : ''}`
 export const label = (task) => `${task.id}（${task.workspace}）${task.title}`
+/** A task waiting for the owner's answer to its own ask_owner question. @param {Pick<Task, 'state' | 'question'>} task */
+export const isAsking = (task) => task.state === 'waiting' && Boolean(task.question)
+/** The owner-visible text of a question: the question, then its options numbered the way an answer names them. @param {Question} question */
+export const questionText = ({ text, options }) =>
+  options.length ? `${text}\n\n${options.map((option, i) => `${i + 1}. ${option}`).join('\n')}` : text
 const DETAIL_MAX = 8000
 const clip = (value) => ([...value].length > DETAIL_MAX ? `${[...value].slice(0, DETAIL_MAX).join('')}…` : value)
 export const hash = (value) => createHash('sha256').update(value).digest('hex')
@@ -201,6 +208,7 @@ export function transit(tx, taskId, event, detail = {}) {
   }
   task.state = to
   task.reason = reason
+  if (to !== 'waiting' && task.question) task.question = null
   task.endedAt = ENDED.has(to) ? (from === to ? task.endedAt : tx.at) : null
   const seq = record(tx, task, 'state', { event, from, to, reason, ...(detail.note ? { note: detail.note } : {}) })
   if (row.effect === 'continue' && !lost)
@@ -274,7 +282,7 @@ export function createTask(tx, { title, workspace, inbox, brief, hops }) {
     id, title, brief, briefHash: hash(brief), workspace, state: 'queued', reason: null,
     origin: { kind: 'owner', inbox }, hops,
     sessionId: null, generation: 0, cursor: 0, resumed: 0, refusals: 0,
-    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, repo: null, publishCalls: [], prFailed: null, attach: null, eventSeq: 0,
+    usage: { tokens: null, cost: null }, reading: { tokens: null, cost: null }, budgetBase: { tokens: null, cost: null }, prUrl: null, repo: null, publishCalls: [], prFailed: null, attach: null, question: null, eventSeq: 0,
     createdAt: tx.at, updatedAt: tx.at, endedAt: null, compacted: null,
   }
   tx.store.createTask(task)
@@ -293,7 +301,7 @@ export function createTask(tx, { title, workspace, inbox, brief, hops }) {
  * @returns {import('./signals.mjs').Disposition}
  */
 export function forward(tx, taskId, entry, { unquoted, picked }) {
-  const task = getTask(tx, taskId)
+  let task = getTask(tx, taskId)
   const body = /** @type {any} */ (entry.signal).text ?? ''
   if (task.state === 'abandoned' || task.state === 'expired') {
     transit(tx, taskId, 'ownerMessage', { about: entry.key })
@@ -303,6 +311,11 @@ export function forward(tx, taskId, entry, { unquoted, picked }) {
     choiceCard(tx, entry.key, [task], `这条提到了别的工作区，要接到 ${label(task)} 吗？`)
     return { kind: 'asked', taskIds: [taskId], reason: 'names another workspace' }
   }
+  // Whatever the owner sends into a task that asked is its answer: the session takes it as its next message.
+  // A question still pending in a running turn is dropped too, or the turn's end would ask it again.
+  if (isAsking(task)) transit(tx, taskId, 'ownerAnswered')
+  else if (task.question) tx.store.putTask({ ...task, question: null })
+  task = getTask(tx, taskId)
   const prior = { state: task.state, reason: task.reason }
   const seq = record(tx, task, 'message', { by: 'owner', inbox: entry.key, unquoted })
   const fresh = getTask(tx, taskId)

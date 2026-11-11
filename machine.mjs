@@ -4,7 +4,7 @@
  *
  * @typedef {'proposed' | 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'paused' | 'abandoned' | 'expired'} TaskState
  * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused' | 'platform' | 'prFailed'} StateReason
- * @typedef {'ownerConfirm' | 'ownerRefuse' | 'proposalExpired' | 'sessionWaiting' | 'ownerAnswered' | 'approvalExpired'
+ * @typedef {'ownerConfirm' | 'ownerRefuse' | 'proposalExpired' | 'sessionWaiting' | 'sessionAsked' | 'ownerAnswered' | 'approvalExpired'
  *   | 'sessionCompleted' | 'sessionFailed' | 'overBudget' | 'overHops' | 'sessionLost' | 'turnInterrupted'
  *   | 'refusedThrice' | 'prFailed' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
  * @typedef {'resume' | 'continue' | 'reopen' | 'interrupt' | 'endedReply' | 'restore'} RowEffect
@@ -25,6 +25,8 @@ export const TRANSITIONS = Object.freeze([
   { from: ['proposed'], on: 'ownerRefuse', to: 'abandoned' },
   { from: ['proposed'], on: 'proposalExpired', to: 'expired' },
   { from: ['running'], on: 'sessionWaiting', to: 'waiting' },
+  // The worker handed a question to ask_owner and its turn ended: the owner's answer is what it waits for.
+  { from: ['running'], on: 'sessionAsked', to: 'waiting' },
   { from: ['waiting'], on: 'ownerAnswered', to: 'running' },
   { from: ['waiting'], on: 'approvalExpired', to: 'failed', reason: 'approvalExpired' },
   { from: ['running'], on: 'prFailed', to: 'paused', reason: 'prFailed' },

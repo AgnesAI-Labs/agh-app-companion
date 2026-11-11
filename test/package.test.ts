@@ -151,8 +151,8 @@ describe('role Bundles through the platform preset resolver', () => {
     expect(worker.doc.ext_ui).toMatchObject({ unattended: 'decline' })
   })
 
-  it('declares git_read, github_read, publish and publish_plan as this package tools, so only worker (no allowlist) can see them', () => {
-    expect(row.capabilities.tools.names).toEqual(['git_read', 'github_read', 'publish', 'publish_plan'])
+  it('declares ask_owner, git_read, github_read, publish and publish_plan as this package tools, so only worker (no allowlist) can see them', () => {
+    expect(row.capabilities.tools.names).toEqual(['ask_owner', 'git_read', 'github_read', 'publish', 'publish_plan'])
     expect(resolvePreset('companion-judge', docs).view.tools.allow).toEqual([])
   })
 

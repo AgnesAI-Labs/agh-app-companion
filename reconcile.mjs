@@ -1,7 +1,7 @@
 import { SLOT_STATES } from './machine.mjs'
 import { PUBLISH_TOOL_NAME, publishedPullRequest, pullRequestFailure } from './publish.mjs'
 import { handbackReason } from './signals.mjs'
-import { allTasks, choiceCard, dispose, enqueueMessage, getTask, label, TEXT, transit } from './tasks.mjs'
+import { allTasks, choiceCard, dispose, enqueueMessage, getTask, isAsking, label, questionText, TEXT, transit } from './tasks.mjs'
 import { recentConversation } from './context.mjs'
 
 /**
@@ -85,7 +85,8 @@ function waitState(tx, taskId, status) {
   const task = getTask(tx, taskId)
   if (status.flags.length && task.state === 'running') transit(tx, taskId, 'sessionWaiting')
   // The session left its wait: the owner's answer or the approval result reached it.
-  if (!status.flags.length && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
+  // A task waiting on its own question has no flag to clear: only the owner's answer ends that wait.
+  if (!status.flags.length && task.state === 'waiting' && !isAsking(task)) transit(tx, taskId, 'ownerAnswered')
 }
 
 /**
@@ -138,7 +139,25 @@ function apply(tx, taskId, event, reply) {
   if (reason !== undefined) return handback(tx, task, reason)
   if (task.attach?.sent) tx.store.putTask({ ...task, attach: null })
   if (task.prFailed) return void transit(tx, taskId, 'prFailed', { note: task.prFailed })
+  if (task.question && task.question.generation === task.generation) return void asked(tx, task.id)
   transit(tx, taskId, 'sessionCompleted', { note: reply.slice(0, 500), message: reply })
+}
+
+/**
+ * The turn ended on a question the worker handed to ask_owner. The text is the companion's own fixed
+ * sentence, so the judge can read it; the question and options are the worker's words and ride as
+ * detail, which only the owner sees.
+ * @param {import('./tasks.mjs').Tx} tx @param {string} taskId
+ */
+function asked(tx, taskId) {
+  if (!transit(tx, taskId, 'sessionAsked')) return
+  const task = getTask(tx, taskId)
+  enqueueMessage(tx, {
+    deliveryKey: `ask:${taskId}:${task.eventSeq}`,
+    text: `${label(task)}：${TEXT.asked}`,
+    detail: questionText(/** @type {import('./tasks.mjs').Question} */ (task.question)),
+    taskIds: [taskId],
+  })
 }
 
 /**
