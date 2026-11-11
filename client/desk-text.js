@@ -61,7 +61,6 @@ const SETTING_NAMES = {
   ownerName: '称呼',
   workspaces: '可用工作区（短名=路径）',
   dedicatedWorkspace: '专用工作区（主脑判断用）',
-  channelInstance: '手机聊天渠道实例',
 }
 const ALL_SETTINGS = Object.keys(SETTING_NAMES)
 
@@ -131,16 +130,16 @@ export function problemView(problem) {
 
 function channelView(text) {
   const base = { id: 'channel', tech: text, action: null }
-  if (/gateway is not available/.test(text))
-    return { ...base, tone: 'info', icon: 'info', title: '手机聊天渠道还没接上', body: '平台上还没有聊天渠道插件。伴侣照常在这里接活，回复先存着，渠道接上后再发。' }
+  if (/TARGET_UNCONFIRMED/.test(text))
+    return { ...base, tone: 'info', icon: 'info', title: '飞书需要你先发一句话', body: '重启后聊天要你先发一条消息才肯收伴侣的话。给机器人随便发一句，积压的回复会按顺序补发。' }
+  if (/does not provide channel targets/.test(text))
+    return { ...base, tone: 'info', icon: 'info', title: '这个 AGH 版本不能把手机聊天配对给伴侣', body: '伴侣照常在这里接活，回复先存着。换成带渠道配对的 AGH 版本后再配对。' }
   if (/was rebound to another owner/.test(text))
-    return { ...base, tone: 'bad', icon: 'shield', title: '手机聊天渠道换了绑定的人，伴侣已停止收发', body: '为了不把消息发给别人，新消息不收，结果不发。任务照常在电脑上跑，你可以在这里看。确认新绑定是你本人后，重启伴侣服务。' }
-  if (/has no bound owner/.test(text))
-    return { ...base, tone: 'warn', icon: 'alert', title: '手机聊天渠道还没绑定你的账号', body: '渠道在运行，但没有绑定主人。伴侣收不到你的消息，也发不出结果。先去渠道那边完成绑定，或换一个渠道实例。', action: { label: '去伴侣设置', to: 'settings' } }
-  if (/is not set|is not a channel instance id/.test(text))
-    return { ...base, tone: 'warn', icon: 'alert', title: '还没选手机聊天渠道', body: '在伴侣设置里填渠道实例。', action: { label: '去伴侣设置', to: 'settings' } }
-  if (/not available|not running/.test(text))
-    return { ...base, tone: 'warn', icon: 'alert', title: '手机聊天渠道没在运行', body: '伴侣现在收不到手机消息，也发不出结果。渠道恢复后会自动接上。', action: { label: '去伴侣设置', to: 'settings' } }
+    return { ...base, tone: 'bad', icon: 'shield', title: '手机聊天换了配对的人，伴侣已停止收发', body: '为了不把消息发给别人，新消息不收，结果不发。任务照常在电脑上跑，你可以在这里看。确认新配对是你本人后，重启伴侣服务。' }
+  if (/is not paired/.test(text))
+    return { ...base, tone: 'warn', icon: 'alert', title: '还没配对手机聊天', body: '伴侣收不到你的手机消息，也发不出结果，回复先存着。到 AGH 的渠道页生成配对码，再在聊天里私聊机器人发送它。' }
+  if (/not running/.test(text))
+    return { ...base, tone: 'warn', icon: 'alert', title: '手机聊天渠道没在运行', body: '伴侣现在收不到手机消息，也发不出结果。渠道恢复后会自动接上。' }
   return { ...base, tone: 'warn', icon: 'alert', title: '手机聊天渠道有问题', body: '原因见技术详情。' }
 }
 

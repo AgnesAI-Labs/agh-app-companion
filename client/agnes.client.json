@@ -7,7 +7,7 @@
     "slots": ["ui:sidebar", "sidebar"],
     "presentationRoles": ["navigation"],
     "styles": ["./desk.css"],
-    "services": ["companion.status", "companion.configuration", "companion.check", "companion.configure", "companion.desk", "companion.submit"],
+    "services": ["companion.status", "companion.configuration", "companion.check", "companion.configure", "companion.desk", "companion.submit", "companion.unpair"],
     "projections": [],
     "homeEntries": [
       {

@@ -1,96 +1,151 @@
 /**
- * The chat channel's gateway as channel-contract.mjs assumes it: one instance with a bound owner,
- * sends that return a message id, and a delivery ledger keyed by deliveryKey. `shown` is what the
- * owner's phone received; a send that lands but loses its response still shows once.
+ * The platform's managed channel targets (`init.channels`, design section 6.1) as a fake: one
+ * service, at most one pairing, a send ledger keyed by deliveryKey, and refusals with the fixed
+ * codes. `channels` is what the service receives; `port` is the companion's gateway over it.
+ * `shown` is what the owner's phone received; a send that lands but loses its response still shows once.
  */
+import { channelGateway } from '../channel-targets.mjs'
+
 type Delivery = { state: 'delivered'; messageId: string } | { state: 'pending' } | { state: 'failed' } | { state: 'unknown' }
+export type Pairing = {
+  id: string
+  instanceId: string
+  provider: string
+  userId: string
+  chatId: string
+  label: string
+  running: boolean
+  textChars: number
+}
 
-export const OWNER = { userId: 'u-owner', chatId: 'dm-owner', targetId: 'a'.repeat(32) }
+export const OWNER: Pairing = {
+  id: 'a'.repeat(32),
+  instanceId: 'im-1',
+  provider: 'feishu',
+  userId: 'u-owner',
+  chatId: 'dm-owner',
+  label: '小明',
+  running: true,
+  textChars: 4000,
+}
+export const CHAT_ID = OWNER.chatId
 
-export function fakeGateway(options: { instance?: string; owner?: typeof OWNER | null; running?: boolean } = {}) {
-  const instanceId = options.instance ?? 'im-1'
-  const ledger = new Map<string, Delivery>()
-  const shown: { chatId: string; deliveryKey: string; message: any; messageId: string }[] = []
-  let state: { running: boolean; owner: typeof OWNER | null } | undefined = {
-    running: options.running ?? true,
-    owner: options.owner === undefined ? OWNER : options.owner,
+class Refusal extends Error {
+  constructor(readonly code: string) {
+    super(code)
   }
-  let mode: 'ok' | 'down' | 'lostResponse' | 'stuck' = 'ok'
+}
+
+export function fakeGateway(options: { paired?: boolean; running?: boolean; textChars?: number } = {}) {
+  const ledger = new Map<string, Delivery>()
+  const shown: { chatId: string; deliveryKey: string; text: string; title: string; body: string; messageId: string }[] = []
+  const rejected: { code: string; text: string }[] = []
+  let pairing: Pairing | undefined =
+    options.paired === false ? undefined : { ...OWNER, running: options.running ?? true, textChars: options.textChars ?? OWNER.textChars }
+  let mode: 'ok' | 'down' | 'lostResponse' | 'stuck' | 'unconfirmed' = 'ok'
   let sends = 0
   let seq = 0
-  const port = {
-    async instance(id: string) {
-      if (id !== instanceId || !state) return undefined
-      return { running: state.running, owner: state.owner }
+  let eventHandler: ((event: unknown) => Promise<void>) | undefined
+  const changeHandlers: (() => void)[] = []
+  const fire = () => changeHandlers.forEach((handler) => handler())
+  const channels = {
+    async pairing() {
+      return pairing ? { ...pairing } : undefined
     },
-    async send(id: string, target: { chatId: string; deliveryKey: string }, message: any) {
+    onEvent(handler: (event: unknown) => Promise<void>) {
+      eventHandler = handler
+    },
+    onPairingChange(handler: () => void) {
+      changeHandlers.push(handler)
+    },
+    async send(pairingId: string, input: { deliveryKey: string; text: string }) {
       sends++
-      if (id !== instanceId) throw new Error('unknown instance')
+      if (!pairing || pairingId !== pairing.id) throw new Refusal('NOT_PAIRED')
+      if (!pairing.running) throw new Refusal('CHANNEL_UNAVAILABLE')
+      if (!input.text || input.text.length > pairing.textChars) {
+        rejected.push({ code: 'TOO_LARGE', text: input.text })
+        throw new Refusal('TOO_LARGE')
+      }
       if (mode === 'down') {
-        ledger.set(target.deliveryKey, { state: 'failed' })
+        ledger.set(input.deliveryKey, { state: 'unknown' })
         throw new Error('channel down')
       }
+      if (mode === 'unconfirmed') {
+        ledger.set(input.deliveryKey, { state: 'unknown' })
+        throw new Refusal('TARGET_UNCONFIRMED')
+      }
       if (mode === 'stuck') {
-        ledger.set(target.deliveryKey, { state: 'pending' })
+        ledger.set(input.deliveryKey, { state: 'pending' })
         throw new Error('timed out')
       }
       const messageId = `om-${++seq}`
-      shown.push({ chatId: target.chatId, deliveryKey: target.deliveryKey, message, messageId })
-      ledger.set(target.deliveryKey, { state: 'delivered', messageId })
+      const [title = '', ...rest] = input.text.split('\n\n')
+      shown.push({ chatId: pairing.chatId, deliveryKey: input.deliveryKey, text: input.text, title, body: rest.join('\n\n'), messageId })
+      ledger.set(input.deliveryKey, { state: 'delivered', messageId })
       if (mode === 'lostResponse') throw new Error('read timed out')
       return { messageId }
     },
-    async delivery(id: string, deliveryKey: string): Promise<Delivery> {
-      if (id !== instanceId) return { state: 'unknown' }
+    async delivery(pairingId: string, deliveryKey: string): Promise<Delivery> {
+      if (!pairing || pairingId !== pairing.id) throw new Refusal('NOT_PAIRED')
       return ledger.get(deliveryKey) ?? { state: 'unknown' }
+    },
+    async unpair(pairingId: string) {
+      if (!pairing || pairingId !== pairing.id) throw new Refusal('NOT_PAIRED')
+      pairing = undefined
+      fire()
     },
   }
   let eventSeq = 0
-  const base = (fields: Record<string, any>) => ({
-    eventId: fields.eventId ?? `ev-${++eventSeq}`,
-    accountId: 'bot',
-    chat: fields.chat ?? { id: OWNER.chatId, type: 'dm' },
-    sender: fields.sender ?? { userId: OWNER.userId, displayName: 'Owner', raw: {} },
-    at: fields.at ?? '2026-11-10T08:00:00.000Z',
-  })
   return {
-    port,
+    channels,
+    port: channelGateway(channels)!,
     shown,
+    rejected,
     ledger,
     get sends() {
       return sends
     },
+    get handlerRegistered() {
+      return eventHandler !== undefined
+    },
     setMode(next: typeof mode) {
       mode = next
     },
-    /** Changes the instance while the companion runs: bind another owner, stop or start it, or remove it. */
-    rebind(owner: typeof OWNER | null) {
-      if (state) state.owner = owner
+    /** The owner pairs after the service started; the platform tells the service once. */
+    pair(next: Pairing = OWNER, notify = true) {
+      pairing = { ...next }
+      if (notify) fire()
+    },
+    /** Another owner takes the pairing. */
+    rebind(next: Partial<Pairing>) {
+      if (pairing) pairing = { ...pairing, ...next }
     },
     setRunning(running: boolean) {
-      if (state) state.running = running
+      if (pairing) pairing.running = running
     },
-    remove() {
-      state = undefined
+    /** Hands one event to the registered handler, as the platform does. */
+    async emit(event: unknown) {
+      if (!eventHandler) throw new Error('no handler registered')
+      await eventHandler(event)
     },
-    /** A private message event in the draft contract's shape. */
+    /** A private message event in the platform's ChannelTargetEvent shape. */
     message(text: string, fields: Record<string, any> = {}) {
-      const { quotedMessageId, ...rest } = fields
+      const id = fields.eventId ?? `ev-${++eventSeq}`
       return {
-        ...base(rest),
         kind: 'message',
-        messageId: rest.messageId ?? `in-${eventSeq}`,
+        origin: 'owner',
+        pairingId: fields.pairingId ?? pairing?.id ?? OWNER.id,
+        instanceId: 'im-1',
+        eventId: id,
+        messageId: fields.messageId ?? `in-${eventSeq}`,
+        at: fields.at ?? '2026-11-10T08:00:00.000Z',
+        chat: fields.chat ?? { id: OWNER.chatId, type: 'dm' },
+        sender: fields.sender ?? { userId: OWNER.userId },
         text,
-        attachments: [],
-        mentions: { bot: false, replyToBot: Boolean(quotedMessageId), quoteBot: false },
-        ...(quotedMessageId ? { quotedMessageId } : {}),
+        ...(fields.quotedMessageId ? { quotedMessageId: fields.quotedMessageId } : {}),
       }
     },
-    /** A card button click on the card message `messageId`. */
-    click(messageId: string, value: string, fields: Record<string, any> = {}) {
-      return { ...base(fields), kind: 'cardAction', cardBizId: `biz-${messageId}`, messageId, value }
-    },
-    stranger: { userId: 'u-stranger', displayName: 'Owner', raw: {} },
-    nextOwner: { userId: 'u-next', chatId: 'dm-next', targetId: 'b'.repeat(32) },
+    stranger: { userId: 'u-stranger' },
+    nextOwner: { ...OWNER, id: 'b'.repeat(32), userId: 'u-next', chatId: 'dm-next' },
   }
 }

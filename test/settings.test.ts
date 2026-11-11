@@ -24,7 +24,6 @@ describe('companion settings', () => {
       'ownerName',
       'workspaces',
       'dedicatedWorkspace',
-      'channelInstance',
     ])
   })
 
@@ -51,9 +50,17 @@ describe('companion settings', () => {
     ['an upper-case short name', { workspaces: [{ shortName: 'API', path: '/work/api' }] }],
     ['an unknown field', { extra: true }],
     ['a missing model role', { models: { judge: complete.models.judge } }],
-    ['a null where text is expected', { channelInstance: null }],
+    ['a null where text is expected', { dedicatedWorkspace: null }],
   ])('leaves %s to the Host schema check, which refuses it', (_name, patch) => {
     expect(hostAccepts({ ...complete, ...patch })).toBe(false)
+  })
+
+  it('accepts a configuration saved with the old channel instance, or without one, and ignores the field', () => {
+    expect(hostAccepts({ ...complete, channelInstance: 'chat-main' })).toBe(true)
+    const { channelInstance: _old, ...without } = complete
+    expect(hostAccepts(without)).toBe(true)
+    expect(missingSettings(without as typeof complete)).toEqual([])
+    expect(missingSettings({ ...without, channelInstance: '' } as typeof complete)).toEqual([])
   })
 
   it('treats a blank owner name as missing, not configured', () => {

@@ -85,10 +85,6 @@ function Settings({ services }) {
       '专用工作区（主脑判断用，不能是上面的工作区）',
       h('input', { value: draft.dedicatedWorkspace, onChange: (e) => set({ dedicatedWorkspace: e.target.value }) }),
     ),
-    field(
-      '聊天渠道实例',
-      h('input', { value: draft.channelInstance, onChange: (e) => set({ channelInstance: e.target.value }) }),
-    ),
     ...MODEL_ROLES.map(([role, label]) =>
       field(
         `${label}的模型路由（留空用部署默认）`,

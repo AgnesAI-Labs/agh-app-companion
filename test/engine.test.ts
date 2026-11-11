@@ -16,7 +16,7 @@ const init = (store = memoryOwnedStore(), config: unknown = DEFAULT_SETTINGS) =>
 })
 
 describe('managed engine', () => {
-  it('registers one resource whose configuration is the settings schema, and the task desk\'s two services', () => {
+  it('registers one resource whose configuration is the settings schema, and the task desk\'s three services', () => {
     const register = vi.fn()
     const services = vi.fn()
     main.apply({ profileRuntime: { register }, tools: { register: vi.fn() }, services: { register: services } } as never)
@@ -26,6 +26,7 @@ describe('managed engine', () => {
     expect(services.mock.calls.map(([service]) => [service.name, service.kind, service.scope])).toEqual([
       ['companion.desk', 'query', 'profile'],
       ['companion.submit', 'effect', 'profile'],
+      ['companion.unpair', 'effect', 'profile'],
     ])
   })
 

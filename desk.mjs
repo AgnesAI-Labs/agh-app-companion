@@ -33,7 +33,14 @@ import { allTasks } from './tasks.mjs'
  *   sessions: import('./sessions.mjs').ManagedSessions | null,
  *   prRepo: (task: Task) => string | undefined,
  *   workspaces: readonly string[],  the short names the owner can name, for the composer's chips
+ *   pairing: PairingView,
  * }} DeskDeps
+ */
+
+/**
+ * @typedef {{ state: 'paired', provider: string, label: string, running: boolean }
+ *   | { state: 'unpaired' } | { state: 'unsupported' } | { state: 'unknown' }} PairingView
+ *   what the platform says about the service's chat pairing; unsupported = a host without channel targets
  */
 
 export const DESK_SOURCE = 'desk'
@@ -100,6 +107,24 @@ export const DESK_CAPABILITIES = Object.freeze({
       approvalScopes: [],
     },
   },
+  unpair: {
+    name: 'companion.unpair',
+    scope: 'profile',
+    kind: 'effect',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    outputSchema: { type: 'object' },
+    timeoutMs: 30000,
+    maxResultBytes: 65536,
+    // Unpairing only takes the companion's own access to the chat away; pairing again needs a new
+    // code from the AGH channel page, so no approval is asked.
+    effectPolicy: {
+      isDestructive: true,
+      isOpenWorld: false,
+      replay: 'idempotent',
+      requiresApproval: 'never',
+      approvalScopes: [],
+    },
+  },
 })
 
 /**
@@ -114,7 +139,7 @@ export function assertLocalOwner(ctx) {
 }
 
 /**
- * @param {() => Promise<{ desk(input: unknown): Promise<unknown>, submit(input: unknown, operationId: string): unknown }>} resource
+ * @param {() => Promise<{ desk(input: unknown): Promise<unknown>, submit(input: unknown, operationId: string): unknown, unpair(): Promise<unknown> }>} resource
  *   the managed resource's handle.get
  * @returns {import('@agnes/extension-api').ServiceDef[]}
  */
@@ -148,6 +173,19 @@ export function deskServices(resource) {
         return started.submit(input, operationId)
       },
     },
+    {
+      ...DESK_CAPABILITIES.unpair,
+      async handler(_input, ctx) {
+        assertLocalOwner(ctx)
+        let started
+        try {
+          started = await resource()
+        } catch (error) {
+          return refused('not-running', `伴侣服务没有运行：${clip(error instanceof Error ? error.message : String(error), 200)}`)
+        }
+        return started.unpair()
+      },
+    },
   ])
 }
 
@@ -172,6 +210,7 @@ const EMPTY = Object.freeze({
   usage: { today: null, caps: { dailyCost: null, taskCost: null, taskTokens: null, maxHops: null }, near: NEAR_CAP, top: [] },
   store: { ratio: 0, warn: false, full: false },
   sessionsReadable: false,
+  pairing: { state: 'unsupported' },
 })
 
 /**
@@ -184,7 +223,7 @@ export async function buildDesk(deps, input = {}) {
   const { engine, store, limits } = deps
   const at = deps.now()
   const problems = deps.status.problems.map((p) => ({ ...p, text: clip(p.text, NOTE_MAX) }))
-  if (!engine) return { ...EMPTY, at, running: deps.status.running, problems }
+  if (!engine) return { ...EMPTY, at, running: deps.status.running, problems, pairing: deps.pairing }
   const tx = { store, at, limits, workspaces: [] }
 
   /** @type {Map<string, import('./sessions.mjs').SessionRow>} */
@@ -257,6 +296,7 @@ export async function buildDesk(deps, input = {}) {
     },
     store: { ratio, warn: ratio >= limits.storeWarnRatio, full: ratio >= limits.storeRefuseRatio },
     sessionsReadable,
+    pairing: deps.pairing,
   }
   if (typeof input.taskId === 'string') {
     const task = store.getTask(input.taskId)

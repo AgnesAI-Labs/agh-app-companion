@@ -443,6 +443,23 @@ function Engine({ data }) {
       h('dt', null, '存储'), h('dd', null, `${Math.round((data.store?.ratio ?? 0) * 100)}%`)))
 }
 
+const PROVIDERS = { feishu: '飞书' }
+
+function Pairing({ pairing, onUnpair }) {
+  const state = pairing?.state ?? 'unknown'
+  return h('section', { className: 'cp-panel', 'aria-labelledby': 'cp-pair-h', 'data-testid': 'pairing' },
+    h('h2', { id: 'cp-pair-h' }, '手机聊天'),
+    state === 'paired'
+      ? h(React.Fragment, null,
+          h('p', { style: { margin: '0 0 8px' } }, `已配对：${PROVIDERS[pairing.provider] ?? pairing.provider} · ${pairing.label}`, pairing.running ? null : h('span', { className: 'cp-muted' }, '（渠道没在运行）')),
+          h('button', { type: 'button', className: 'cp-btn cp-danger', onClick: onUnpair, 'data-testid': 'unpair' }, '解除配对'))
+      : state === 'unpaired'
+        ? h('p', { className: 'cp-muted', style: { margin: 0 } }, '还没有配对。到 AGH 的「插件 → 渠道」页，在渠道实例上点“配对到插件服务”，选“伴侣”，再在聊天里私聊机器人发送页面上的配对码。')
+        : state === 'unsupported'
+          ? h('p', { className: 'cp-muted', style: { margin: 0 } }, '这个 AGH 版本不支持把渠道配对给插件（需要 Extension API 5.12）。')
+          : h('p', { className: 'cp-muted', style: { margin: 0 } }, '读不到配对状态。'))
+}
+
 function Drawer({ task, detail, now, act, onClose }) {
   const view = detail && detail.id === task.id ? detail : null
   const done = task.state === 'done' || (view && view.note)
@@ -532,6 +549,16 @@ export function Desk({ services, openSettings }) {
     return [...list(t.needsYou), ...list(t.running), ...list(t.queued).flatMap((g) => list(g.tasks)), ...list(t.paused), ...list(t.recent), ...list(t.older), ...list(t.unknown)]
   }, [data])
   const byId = (id) => all.find((t) => t.id === id)
+  const unpair = async () => {
+    try {
+      const receipt = await services.effect('companion.unpair', {}, { operationId: crypto.randomUUID() })
+      toast(receipt?.state === 'completed' || !receipt?.state ? '已解除配对' : `没有解除（${receipt.state}）`)
+    } catch (error) {
+      toast(`没有解除：${message(error)}`)
+    } finally {
+      await reload()
+    }
+  }
   const act = {
     detail: (id) => setOpenId(id),
     stop: (id) => setDialog({ kind: 'stop', id }),
@@ -606,7 +633,8 @@ export function Desk({ services, openSettings }) {
         h('div', { className: 'cp-side' },
           blocked
             ? h('div', { className: 'cp-panel' }, h('h2', null, h(Icon, { name: 'info' }), '伴侣能做什么'), h('p', { className: 'cp-muted', style: { margin: 0 } }, '你在这里或手机聊天里说一句“给 api 仓修 README 错字并开 PR”，伴侣开会话去做；推送和开 PR 前会请你批准；做完把 PR 链接发回来。'))
-            : h(React.Fragment, null, h(Usage, { usage: data.usage }), h(Engine, { data }))))),
+            : h(React.Fragment, null, h(Usage, { usage: data.usage }), h(Engine, { data })),
+          h(Pairing, { pairing: data.pairing, onUnpair: unpair })))),
     openTask ? h(Drawer, { key: openTask.id, task: openTask, detail: data.detail, now, act, onClose: () => setOpenId(null) }) : null,
     dialog && dialogTask && dialog.kind === 'stop'
       ? h(StopDialog, { task: dialogTask, onCancel: () => setDialog(null), onConfirm: async () => { setDialog(null); await run({ kind: 'button', action: 'stop', taskId: dialog.id }, `已让 ${dialog.id} 停止`) } })

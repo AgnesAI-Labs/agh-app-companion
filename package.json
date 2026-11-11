@@ -31,13 +31,14 @@
     "desk.mjs",
     "engine.mjs",
     "channel-contract.mjs",
+    "channel-targets.mjs",
     "channel.mjs",
     "client",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check desk.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel.mjs && node --check client/index.js && node --check client/settings-save.js && node --check client/desk.js && node --check client/desk-text.js",
+    "build": "node --check index.mjs && node --check publish.mjs && node --check settings.mjs && node --check store.mjs && node --check sessions.mjs && node --check platform-sessions.mjs && node --check limits.mjs && node --check machine.mjs && node --check signals.mjs && node --check tasks.mjs && node --check context.mjs && node --check judge.mjs && node --check effects.mjs && node --check reconcile.mjs && node --check housekeeping.mjs && node --check desk.mjs && node --check engine.mjs && node --check channel-contract.mjs && node --check channel-targets.mjs && node --check channel.mjs && node --check client/index.js && node --check client/settings-save.js && node --check client/desk.js && node --check client/desk-text.js",
     "test": "sh scripts/companion-test.sh"
   },
   "agnes": {
@@ -50,7 +51,7 @@
       {
         "id": "ext:@agh-apps/companion/main",
         "export": "main",
-        "apiRange": "^5.0.0",
+        "apiRange": "^5.12.0",
         "runtime": "in-process",
         "inject": [
           "services",
@@ -80,7 +81,8 @@
               "shutdownTimeoutMs": 5000,
               "apiVersion": "1.0.0",
               "requires": [],
-              "sessions": true
+              "sessions": true,
+              "channelTargets": true
             }
           ],
           "services": [
@@ -173,7 +175,6 @@
                   "ownerName",
                   "workspaces",
                   "dedicatedWorkspace",
-                  "channelInstance",
                   "models"
                 ],
                 "properties": {
@@ -392,6 +393,28 @@
               "maxResultBytes": 65536,
               "effectPolicy": {
                 "isDestructive": false,
+                "isOpenWorld": false,
+                "replay": "idempotent",
+                "requiresApproval": "never",
+                "approvalScopes": []
+              }
+            },
+            {
+              "name": "companion.unpair",
+              "scope": "profile",
+              "kind": "effect",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object"
+              },
+              "timeoutMs": 30000,
+              "maxResultBytes": 65536,
+              "effectPolicy": {
+                "isDestructive": true,
                 "isOpenWorld": false,
                 "replay": "idempotent",
                 "requiresApproval": "never",

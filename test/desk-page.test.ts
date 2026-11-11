@@ -276,10 +276,10 @@ describe('task desk page', () => {
   it('shows one status with its one action, and only the status when the engine is not running', async () => {
     const s = await mount(desk({
       running: false, canSubmit: false, submitBlock: 'not-running',
-      problems: [{ kind: 'settings', missing: ['ownerName', 'channelInstance'], text: 'x' }],
+      problems: [{ kind: 'settings', missing: ['ownerName', 'workspaces'], text: 'x' }],
     }))
     expect($('[data-testid="status-settings"] h3').textContent).toBe('还差 2 项设置，伴侣才能接活')
-    expect($$('[data-testid="status-settings"] li').map((li) => li.textContent)).toEqual(['称呼：还没填', '可用工作区（短名=路径）', '专用工作区（主脑判断用）', '手机聊天渠道实例：还没填'])
+    expect($$('[data-testid="status-settings"] li').map((li) => li.textContent)).toEqual(['称呼：还没填', '可用工作区（短名=路径）：还没填', '专用工作区（主脑判断用）'])
     expect($('#cp-cmp')).toBeNull()
     expect($('[data-testid="usage"]')).toBeNull()
     await click(byText('[data-testid="status-settings"] button', '去伴侣设置'))
@@ -291,7 +291,7 @@ describe('task desk page', () => {
     ['owner', { kind: 'owner', text: 'this store was used with owner a' }, '这份伴侣数据属于另一位主人', false],
     ['engine', { kind: 'engine', unavailable: true, text: 'companion store format 2 is newer than this build (1); upgrade the companion. Nothing was changed.' }, '伴侣数据比这个版本新', false],
     ['model', { kind: 'model', roles: ['judge'], text: 'a model route is set' }, '设置里的模型路由伴侣还不能用', true],
-    ['channel', { kind: 'channel', text: 'channel instance im-1 has no bound owner' }, '手机聊天渠道还没绑定你的账号', true],
+    ['channel', { kind: 'channel', text: 'the companion is not paired with a chat; pair it from the AGH channel page' }, '还没配对手机聊天', false],
   ])('says the %s problem in words, with the engine\'s text under technical details', async (id, problem, title, action) => {
     const s = await mount(desk({ running: id === 'model' || id === 'channel', problems: [problem] }))
     expect($(`[data-testid="status-${id}"] h3`).textContent).toBe(title)
@@ -304,19 +304,43 @@ describe('task desk page', () => {
   })
 
   it('keeps working without a chat channel, and turns off for a rebound one', async () => {
-    await mount(withTasks({ running: [task('T-0001')] }, { problems: [{ kind: 'channel', text: 'the chat channel gateway is not available on this platform; the companion runs without a channel' }] }))
-    expect($('[data-testid="status-channel"] h3').textContent).toBe('手机聊天渠道还没接上')
+    await mount(withTasks({ running: [task('T-0001')] }, { problems: [{ kind: 'channel', text: 'the platform does not provide channel targets (init.channels); the companion runs without a chat channel' }] }))
+    expect($('[data-testid="status-channel"] h3').textContent).toBe('这个 AGH 版本不能把手机聊天配对给伴侣')
     expect(($('#cp-cmp') as HTMLTextAreaElement).disabled).toBe(false)
     await act(async () => root!.unmount())
     document.body.innerHTML = ''
     await mount(withTasks({}, {
       canSubmit: false, submitBlock: 'rebound',
-      problems: [{ kind: 'channel', text: 'channel instance im-1 was rebound to another owner; restart the companion service to serve the new owner' }],
+      problems: [{ kind: 'channel', text: 'the pairing was rebound to another owner; restart the companion service to serve the new owner' }],
       cards: [{ key: 'c', kind: 'ask', text: '问', detail: null, original: null, options: [{ taskId: 'T-0001', title: 'x' }], allowNew: true, at: AT, sentAt: null }],
     }))
     expect($('[data-testid="status-channel"] h3').textContent).toContain('已停止收发')
     expect($('[data-testid="choice-card"]').textContent).toContain('渠道换绑期间先不能选')
     expect($$('[data-testid^="pick-"]')).toHaveLength(0)
+  })
+
+  it('shows the pairing, tells the owner to write first when the chat waits for them, and unpairs on request', async () => {
+    const s = await mount(desk({
+      pairing: { state: 'paired', provider: 'feishu', label: '小明', running: true },
+      problems: [{ kind: 'channel', text: 'the chat only accepts the companion\'s messages after the owner sends one first (TARGET_UNCONFIRMED)' }],
+    }))
+    expect($('[data-testid="pairing"]').textContent).toContain('已配对：飞书 · 小明')
+    expect($('[data-testid="status-channel"] h3').textContent).toBe('飞书需要你先发一句话')
+    await click($('[data-testid="unpair"]'))
+    await flush()
+    expect(s.services.effect).toHaveBeenCalledWith('companion.unpair', {}, { operationId: expect.any(String) })
+    expect($('.cp-toasts').textContent).toContain('已解除配对')
+  })
+
+  it('tells an unpaired owner where to pair, and a host without channel pairing what it lacks', async () => {
+    await mount(desk({ pairing: { state: 'unpaired' } }))
+    expect($('[data-testid="pairing"]').textContent).toContain('渠道')
+    expect($('[data-testid="pairing"]').textContent).toContain('配对码')
+    expect($('[data-testid="unpair"]')).toBeNull()
+    await act(async () => root!.unmount())
+    document.body.innerHTML = ''
+    await mount(desk({ pairing: { state: 'unsupported' } }))
+    expect($('[data-testid="pairing"]').textContent).toContain('5.12')
   })
 
   it('opens a task\'s detail with a query for that task and shows the frozen words and the record', async () => {

@@ -108,7 +108,7 @@ describe('package declaration', () => {
     ])
   })
 
-  it('declares the Host facade services for the managed engine, with the settings schema, and the task desk\'s two', () => {
+  it('declares the Host facade services for the managed engine, with the settings schema, and the task desk\'s three', () => {
     expect(row.capabilities.store).toBe(true)
     expect(row.capabilities.managedServices).toEqual([
       expect.objectContaining({ id: ENGINE_ID, scope: 'profile', artifact: { kind: 'in-process' } }),
@@ -119,12 +119,13 @@ describe('package declaration', () => {
           ...managedServiceCapabilities(ENGINE_ID, SETTINGS_SCHEMA),
           DESK_CAPABILITIES.query,
           DESK_CAPABILITIES.submit,
+          DESK_CAPABILITIES.unpair,
         ]),
       ),
     )
     const clientServices = JSON.parse(readFileSync(new URL('../client/agnes.client.json', import.meta.url), 'utf8')).client.services
     expect(clientServices).toEqual(
-      expect.arrayContaining(['companion.desk', 'companion.submit', 'companion.status', 'companion.configuration', 'companion.check', 'companion.configure']),
+      expect.arrayContaining(['companion.desk', 'companion.submit', 'companion.unpair', 'companion.status', 'companion.configuration', 'companion.check', 'companion.configure']),
     )
     for (const name of clientServices) expect(row.capabilities.services.map((s: { name: string }) => s.name)).toContain(name)
   })

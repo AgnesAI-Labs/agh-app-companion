@@ -4,6 +4,7 @@ import { LIMITS } from '../limits.mjs'
 import { REFUSALS } from '../platform-sessions.mjs'
 import { ROLES } from '../sessions.mjs'
 import { DEFAULT_SETTINGS } from '../settings.mjs'
+import { STATUS } from '../channel.mjs'
 import { fakeGateway, OWNER } from './fake-gateway.js'
 import { fakeSessions } from './fake-sessions.js'
 import { decisions, readJudgeInput, SETTINGS } from './harness.js'
@@ -47,9 +48,9 @@ function service(
       shutdown = handler
     }),
     ...(options.sessions ? { sessions: options.sessions } : {}),
+    ...(options.gateway ? { channels: options.gateway.channels } : {}),
   }
-  const gateway = options.gateway
-  const started = startEngine(init as never, { resolveGateway: () => gateway?.port })
+  const started = startEngine(init as never)
   return {
     store,
     init,
@@ -60,7 +61,7 @@ function service(
 
 const tick = () => vi.advanceTimersByTimeAsync(LIMITS.tickIntervalMs)
 const bodies = (gateway: ReturnType<typeof fakeGateway>) =>
-  gateway.shown.map((m) => m.message.blocks[0].body as string)
+  gateway.shown.map((m) => m.body)
 
 describe('companion service', () => {
   beforeEach(() => {
@@ -163,7 +164,7 @@ describe('companion service', () => {
       problems: [
         {
           kind: 'settings',
-          missing: ['ownerName', 'workspaces', 'dedicatedWorkspace', 'channelInstance'],
+          missing: ['ownerName', 'workspaces', 'dedicatedWorkspace'],
           text: expect.any(String),
         },
       ],
@@ -185,13 +186,13 @@ describe('companion service', () => {
     await s.shutdown()
   })
 
-  it('runs without a channel when no gateway resolves, keeps replies pending and says so', async () => {
+  it('runs without a channel on a host that has no channel targets, keeps replies pending and says so', async () => {
     const sessions = scripted()
     const s = service({ sessions: sessions.port, gateway: null })
     const svc = await s.started
     expect(svc.status()).toMatchObject({
       running: true,
-      problems: [{ kind: 'channel', text: expect.stringContaining('gateway is not available') }],
+      problems: [{ kind: 'channel', text: expect.stringContaining('does not provide channel targets') }],
     })
     expect(await svc.receive({ kind: 'message' })).toMatchObject({ kind: 'dropped' })
     expect(s.store.get('meta')).not.toHaveProperty('channelOwner')
@@ -200,9 +201,7 @@ describe('companion service', () => {
 
   it('reports the channel refusing at open', async () => {
     const s = service({ sessions: scripted().port, gateway: fakeGateway({ running: false }) })
-    expect((await s.started).status().problems).toEqual([
-      { kind: 'channel', text: 'channel instance im-1 is not running' },
-    ])
+    expect((await s.started).status().problems).toEqual([{ kind: 'channel', text: STATUS.notRunning }])
     await s.shutdown()
   })
 
@@ -303,6 +302,85 @@ describe('companion service', () => {
     expect(sessions.byRole('judge')).toHaveLength(1)
     expect(worker!.inputs).toHaveLength(1)
     await second.shutdown()
+  })
+
+  it('registers its handlers with the platform and takes an owner message through them', async () => {
+    const gateway = fakeGateway()
+    const s = service({ sessions: scripted().port, gateway })
+    const svc = await s.started
+    expect(gateway.handlerRegistered).toBe(true)
+    await gateway.emit(gateway.message('登录页报错了，修一下'))
+    expect([...s.store.rows.keys()].some((key) => key.startsWith('inbox/channel:im-1:'))).toBe(true)
+    await tick()
+    await tick()
+    expect(svc.status()).toEqual({ running: true, problems: [] })
+    expect(bodies(gateway)[0]).toContain('已新建 T-0001')
+    await s.shutdown()
+  })
+
+  it('opens the channel when the owner pairs after the service started, and delivers what waited', async () => {
+    const sessions = scripted()
+    const gateway = fakeGateway({ paired: false })
+    const s = service({ sessions: sessions.port, gateway })
+    const svc = await s.started
+    expect(svc.status()).toMatchObject({ running: true, problems: [{ kind: 'channel', text: STATUS.notPaired }] })
+    expect(await svc.receive(gateway.message('在吗'))).toMatchObject({ kind: 'dropped', reason: STATUS.notPaired })
+
+    gateway.pair()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(svc.status()).toEqual({ running: true, problems: [] })
+    await gateway.emit(gateway.message('登录页报错了，修一下'))
+    await tick()
+    await tick()
+    expect(bodies(gateway)[0]).toContain('已新建 T-0001')
+    expect(s.store.get('meta')).toMatchObject({ channelOwner: { instanceId: 'im-1', userId: OWNER.userId } })
+    await s.shutdown()
+  })
+
+  it('opens the channel for an event that arrives before the pairing change notice', async () => {
+    const gateway = fakeGateway({ paired: false })
+    const s = service({ sessions: scripted().port, gateway })
+    const svc = await s.started
+    gateway.pair(OWNER, false)
+    expect(await svc.receive(gateway.message('登录页报错了，修一下'))).toMatchObject({ kind: 'accepted' })
+    await s.shutdown()
+  })
+
+  it('shows the pairing on the desk and lets the owner unpair, after which replies wait', async () => {
+    const gateway = fakeGateway()
+    const s = service({ sessions: scripted().port, gateway })
+    const svc = await s.started
+    expect(((await svc.desk()) as any).pairing).toEqual({ state: 'paired', provider: 'feishu', label: '小明', running: true })
+    expect(await svc.unpair()).toEqual({ ok: true, result: 'unpaired' })
+    const desk = (await svc.desk()) as any
+    expect(desk.pairing).toEqual({ state: 'unpaired' })
+    expect(desk.problems).toEqual([{ kind: 'channel', text: STATUS.notPaired }])
+    expect(await svc.unpair()).toEqual({ ok: true, result: 'not-paired' })
+    await s.shutdown()
+  })
+
+  it('tells the desk when the host has no channel targets', async () => {
+    const s = service({ sessions: scripted().port, gateway: null })
+    expect(((await (await s.started).desk()) as any).pairing).toEqual({ state: 'unsupported' })
+    await s.shutdown()
+  })
+
+  it('shows the first-message hint on the desk while sends wait on the chat platform', async () => {
+    const gateway = fakeGateway()
+    const s = service({ sessions: scripted().port, gateway })
+    const svc = await s.started
+    gateway.setMode('unconfirmed')
+    await svc.receive(gateway.message('登录页报错了，修一下'))
+    await tick()
+    await tick()
+    expect(gateway.shown).toHaveLength(0)
+    expect(((await svc.desk()) as any).problems).toEqual([{ kind: 'channel', text: STATUS.unconfirmed }])
+    gateway.setMode('ok')
+    await svc.receive(gateway.message('我在'))
+    await tick()
+    expect(bodies(gateway)[0]).toContain('已新建 T-0001')
+    expect(((await svc.desk()) as any).problems).toEqual([])
+    await s.shutdown()
   })
 
   it('refuses a store bound to another owner: nothing delivered, no status answered, nothing deleted', async () => {

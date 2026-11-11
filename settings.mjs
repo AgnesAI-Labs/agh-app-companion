@@ -10,7 +10,7 @@
  *   ownerName: string,
  *   workspaces: Workspace[],
  *   dedicatedWorkspace: string,
- *   channelInstance: string,
+ *   channelInstance?: string,  ignored: the chat channel comes from the platform's pairing, not from a setting
  *   models: { judge: ModelChoice, worker: ModelChoice },
  *   caps?: Caps,
  * }} Settings
@@ -28,7 +28,7 @@ const cap = (extra) => ({ anyOf: [{ type: 'null' }, { type: 'number', exclusiveM
 export const SETTINGS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['ownerName', 'workspaces', 'dedicatedWorkspace', 'channelInstance', 'models'],
+  required: ['ownerName', 'workspaces', 'dedicatedWorkspace', 'models'],
   properties: {
     ownerName: { type: 'string', maxLength: 64 },
     workspaces: {
@@ -45,6 +45,7 @@ export const SETTINGS_SCHEMA = {
       },
     },
     dedicatedWorkspace: { type: 'string', maxLength: 4096 },
+    // Kept so a configuration saved before channel pairing stays valid; nothing reads it.
     channelInstance: { type: 'string', maxLength: 128 },
     models: {
       type: 'object',
@@ -66,7 +67,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   ownerName: '',
   workspaces: [],
   dedicatedWorkspace: '',
-  channelInstance: '',
   models: { judge: { route: '', local: false }, worker: { route: '', local: false } },
   caps: { dailyCost: null, taskCost: null, taskTokens: null },
 })
@@ -99,6 +99,5 @@ export function missingSettings(settings) {
     ...(settings.ownerName.trim() ? [] : ['ownerName']),
     ...(settings.workspaces.length ? [] : ['workspaces']),
     ...(settings.dedicatedWorkspace ? [] : ['dedicatedWorkspace']),
-    ...(settings.channelInstance ? [] : ['channelInstance']),
   ]
 }
