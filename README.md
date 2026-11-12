@@ -106,10 +106,41 @@ output are cut at 200 KB, `status` at 2000 entries and `blame` at 500 lines, and
 `truncated`. A `.gitattributes` clean filter named in your own git config (git-lfs, for example)
 can still run, because the workspace can only select such a filter, not define one.
 
+### Direct answers and Markdown
+
+The judge can answer directly without creating a task. Direct replies keep their Markdown and are
+bounded by the smaller of 8,000 UTF-16 units and the paired channel's current text budget. The model
+receives the same limit the backend checks; the budget is checked again after the model finishes and
+before delivery. A reply that is too long is refused with a specific notice, not silently clipped into
+an incomplete code block. Worker-result and choice-card clipping keep their existing behavior.
+
+Before the first send, the actual reply (or budget-refusal notice) is saved to the outbox. Once a send
+can have an uncertain result, that payload and delivery key stay frozen. If a later budget shrink
+prevents safe retry, the original stays blocked with no claimed receipt, a separate uncertainty
+notice is queued once, and unrelated messages continue. Blocked originals are not presented to the
+judge as replies the owner received. No message is automatically resent under a different key.
+
+A direct answer may repeat an exact task-snapshot link or a valid HTTP/HTTPS URL explicitly supplied
+in the owner message it answers. Credentials, raw quotes and backslash ambiguities are refused. Another
+message in the batch, reference material and old conversation do not authorize links; task titles
+still cannot contain links. URLs are never fetched by this check. Unsafe characters or unverified
+links produce a specific refusal without echoing the rejected output.
+
+Markdown is passed to the channel, not rendered by the judge. Client support for individual Markdown
+features is separate from acceptance and delivery.
+
 ### Asking you a question
 
-You only see the chat, so a worker that needs a decision calls `ask_owner` with a question and, when
-there are clear choices, 2 to 6 options, then ends its turn. The task shows as 等你 and one message
+A worker can call `ask_user_question` for single-choice, multiple-choice or text answers. Supported
+questions appear as a native card in the paired chat and can also be answered in the Web session. The
+tool returns immediately by default, but the task remains 等你 while the backend reports an unanswered
+native question—even if that turn completes. Answering continues the same session; only a settled
+question and completed continuation finish the task. Previously misclassified completed tasks recover
+to 等你 without starting another turn. The card reflects the settled state; unsupported forms retain
+the authenticated Web link.
+
+A worker can also call `ask_owner` with a question and, when there are clear choices, 2 to 6 options,
+then ends its turn. This workflow sends the answer as the next turn. The task shows as 等你 and one message
 says 等你回答, with the question and the numbered options below it. Answer in the chat. A message that
 is just an option number (`1`, `选2`, `2。`) or an option's exact text goes straight to that task's
 session when it is the only task waiting on a question; anything else, such as a new request, goes to
@@ -151,16 +182,11 @@ Buttons and quotes (needs a chat plugin that supports cards and quotes; the Feis
 - The title line is bold, and a Markdown link in a worker's text is shown as `text（address）` so you
   can see where it points.
 
-After the AGH daemon restarts, the chat app may refuse the bot's messages until you send one
-message; the desk then says 飞书需要你先发一句话 and the waiting replies go out after it.
+After an AGH daemon restart, Companion restores its watched worker sessions and reconciles pending cards.
 
 ## Not working yet
 
-- Phone channel, real chat: only the fake platform tests have run it. No real chat app and no real
-  daemon with channel targets have been tried. Until the platform change lands, the real-daemon run
-  below cannot pass its channel steps.
-- Card approval: a chat card cannot answer an approval, and `start` takes no channel binding.
-  Approvals are answered in the Web session only.
+- Phone channel, real chat: validate native questions and approvals with your own Feishu account.
 - Model routes: the platform needs a route and a model name; the settings hold only a route, so a set
   route is reported in `status()` instead of being replaced by the default.
 

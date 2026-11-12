@@ -139,6 +139,7 @@ export function platformSessions(platform) {
     start: guarded((request) => platform.start(request)),
     send: guarded((sessionId, input) => platform.send(sessionId, input)),
     list: guarded(() => platform.list()),
+    status: guarded((sessionId) => platform.status(sessionId)),
     events: guarded((sessionId, options) => platform.events(sessionId, options)),
     result: guarded((sessionId) => platform.result(sessionId)),
     usage: guarded((sessionId) => platform.usage(sessionId)),

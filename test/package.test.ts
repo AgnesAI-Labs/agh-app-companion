@@ -148,7 +148,7 @@ describe('role Bundles through the platform preset resolver', () => {
     expect(worker.view.tools.allow).toBeUndefined()
     expect((worker.doc.tools as { core: string[] }).core).toEqual(expect.arrayContaining(['shell', 'write', 'edit']))
     expect(worker.doc.approval).toMatchObject({ on_unavailable: 'park' })
-    expect(worker.doc.ext_ui).toMatchObject({ unattended: 'decline' })
+    expect(worker.doc.ext_ui).toMatchObject({ unattended: 'park' })
   })
 
   it('declares ask_owner, git_read, github_read, publish and publish_plan as this package tools, so only worker (no allowlist) can see them', () => {
@@ -156,22 +156,22 @@ describe('role Bundles through the platform preset resolver', () => {
     expect(resolvePreset('companion-judge', docs).view.tools.allow).toEqual([])
   })
 
-  it('denies the Web-only question tool and the skill install tools to the worker (N9)', () => {
+  it('denies the skill install tools to the worker', () => {
     expect(pkg.agnes.bundles.worker.profile.toolPolicy.deny).toEqual([
-      'ask_user_question',
       'skill_helper_create',
       'skill_helper_import',
       'skill_helper_install',
     ])
   })
 
-  it('hides ask_user_question from a worker session once the platform resolves the bundle tool policy', () => {
-    const tools = ['ask_user_question', 'publish', 'ui_render'].map((name) => ({ name, readOnly: false }))
+  it('allows native questions and ask_owner in the resolved worker policy', () => {
+    const tools = ['ask_user_question', 'ask_owner', 'publish', 'ui_render'].map((name) => ({ name, readOnly: false }))
     const resolved = resolveSessionCapabilities({
       selection: { toolPolicy: pkg.agnes.bundles.worker.profile.toolPolicy },
       installed: { tools },
     } as never)
     expect(capabilityEnabled(resolved.tools, 'publish')).toBe(true)
-    expect(capabilityEnabled(resolved.tools, 'ask_user_question')).toBe(false)
+    expect(capabilityEnabled(resolved.tools, 'ask_user_question')).toBe(true)
+    expect(capabilityEnabled(resolved.tools, 'ask_owner')).toBe(true)
   })
 })

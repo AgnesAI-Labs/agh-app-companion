@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { onlySnapshotLinks, parseJudgeOutput } from '../judge.mjs'
 import { TEXT } from '../tasks.mjs'
 import { decisions, harness } from './harness.js'
+import { LIMITS } from '../limits.mjs'
 
 const MINUTE = 60 * 1000
 
@@ -139,7 +140,8 @@ describe('judge batches replayed from fixed model outputs', () => {
     expect(h.tasks()).toEqual([expect.objectContaining({ id: 'T-0001', workspace: 'web', title: '首页标题', brief: '把官网首页标题改成新口号', state: 'running' })])
     expect(h.workers()[0]!.request).toMatchObject({ workspace: '/w/web', startKey: 'T-0001:0', permission: 'full-access' })
     expect(h.workers()[0]!.inputs[0]).toContain(TEXT.worker)
-    expect(TEXT.worker).toContain('主人只看聊天')
+    expect(TEXT.worker).toContain('ask_user_question')
+    expect(TEXT.worker).toContain('ask_owner')
     expect(TEXT.worker).toContain('github_read')
     expect(TEXT.worker).toContain('git_read')
     expect(h.channel.texts()).toContain('已新建 T-0001（web）首页标题：进行中')
@@ -238,14 +240,16 @@ describe('answers and conversation context (spec §4.19 tests)', () => {
   })
 
   it.each([
-    ['over 200 characters', '长'.repeat(201)],
-    ['a link outside the snapshot', '看这里 https://example.invalid/x'],
-  ])('rejects an answer %s and sends the fixed text instead', async (_name, text) => {
+    ['over the bounded reply limit', '🧪'.repeat(LIMITS.answerMaxChars / 2 + 1), 'is too long', '上限'],
+    ['a link outside the authorized sources', '看这里 https://example.invalid/x', 'links outside', '链接'],
+  ])('rejects an answer %s with an actionable explanation', async (_name, text, reason, explanation) => {
     const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
     await h.say('a 仓那个改好了没')
     await h.tick()
-    expect(h.channel.texts()).toEqual([TEXT.fallback])
-    expect(h.entry('inbox/im:e1').disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining('answer')] })
+    expect(h.channel.texts()[0]).toContain(explanation)
+    expect(h.channel.texts()).not.toContain(TEXT.fallback)
+    expect(h.channel.texts()).not.toContain(text)
+    expect(h.entry('inbox/im:e1').disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining(reason)] })
   })
 
   it.each([
@@ -279,18 +283,95 @@ describe('answers and conversation context (spec §4.19 tests)', () => {
     ['a control character', '好\u0007的'],
     ['a bidi override', '已完成‮成功'],
     ['a line separator', '好 的'],
-  ])('rejects an answer with %s and sends the fixed text instead', async (_name, text) => {
+  ])('rejects an answer with %s and explains the unsafe content', async (_name, text) => {
     const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
     await h.say('改好了没')
     await h.tick()
-    expect(h.channel.texts()).toEqual([TEXT.fallback])
+    expect(h.channel.texts()[0]).toContain('控制或隐藏字符')
+    expect(h.channel.texts()).not.toContain(text)
   })
 
-  it('keeps an answer that spans lines', async () => {
-    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '两个任务：\n一个在跑，一个已完成。' }) })
-    await h.say('现在怎么样')
+  it('delivers a full Markdown answer beyond 200 characters without creating a task', async () => {
+    const text = '# Markdown\n\n**粗体**、*斜体*、~~删除线~~、`行内代码`\n\n- 列表\n\n> 引用\n\n```javascript\nconst greeting = "hello";\nconsole.log(greeting);\n```\n\n| 名称 | 结果 |\n| --- | --- |\n| 测试 | 通过 |\n\n' + '这是一段需要原样保留的文字。'.repeat(30) + '\n\n结束。'
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
+    await h.say('直接回复 Markdown，不要创建任务')
     await h.tick()
-    expect(h.channel.texts()).toEqual(['两个任务：\n一个在跑，一个已完成。'])
+    await h.tick()
+    expect(h.channel.texts()).toEqual([text])
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+  })
+
+  it.each([
+    ['a Markdown URL', '请原样引用 [飞书](https://open.feishu.cn/)', 'https://open.feishu.cn/'],
+    ['a bare URL', '请原样引用 https://open.feishu.cn/ 。', 'https://open.feishu.cn/'],
+    ['a parenthesized path', '引用 [文档](https://example.org/A_(b))', 'https://example.org/A_(b)'],
+    ['a nested path', '引用 [文档](https://example.org/A_(b(c)))', 'https://example.org/A_(b(c))'],
+  ])('allows %s from the owner message being answered', async (_name, input, url) => {
+    const text = `参考：[文档](${url})`
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
+    await h.say(input)
+    await h.tick()
+    expect(h.channel.texts()).toEqual([text])
+    expect(h.tasks()).toEqual([])
+  })
+
+  it.each([
+    ['adjacent', '[甲](https://example.org/A_(b(c)))[乙](https://example.org/second)'],
+    ['titled', '[文档](https://example.org/doc "文档标题")'],
+    ['reference', '[文档][ref]\n[ref]: https://example.org/doc "文档标题"'],
+    ['computed-call code', '```js\nconst key = "ready"\nconst commands = { [key]: () => 0 }\ncommands[key]("ok")\n```'],
+  ])('preserves %s Markdown without confusing syntax with URI authority', async (_name, text) => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
+    await h.say(`原样引用 ${text}`)
+    await h.tick()
+    expect(h.channel.texts()).toEqual([text])
+  })
+
+  it.each([
+    ['changed path', 'https://example.org/original', 'https://example.org/different'],
+    ['changed query', 'https://example.org/path?a=1', 'https://example.org/path?a=2'],
+    ['appended path', 'https://example.org/path', 'https://example.org/path/extra'],
+    ['Unicode host suffix', 'https://docs.example', 'https://docs.example。net'],
+    ['fullwidth host suffix', 'https://docs.example', 'https://docs.example．net'],
+    ['punctuation inside a Markdown destination', 'https://example.org/path', '[文档](https://example.org/path。)'],
+    ['closing brace inside a Markdown destination', 'https://example.org/path', '[文档](https://example.org/path}extra)'],
+    ['Office protocol destination', 'https://example.org/doc', '[文档](ms-excel:ofe|u|https://example.org/doc "文档")'],
+    ['entity-encoded outer scheme', 'https://example.org/doc', '[文档](ms&#45;excel:ofe|u|https://example.org/doc "文档")'],
+    ['escaped outer scheme', 'https://example.org/doc', '[文档](ms\\-excel:ofe|u|https://example.org/doc "文档")'],
+    ['angle destination with whitespace', 'https://example.org/doc', '[文档](<ms-excel:ofe|u| https://example.org/doc> "文档")'],
+    ['reference destination', 'https://example.org/doc', '[文档][ref]\n[ref]: ms-excel:ofe|u|https://example.org/doc "文档"'],
+    ['bare outer scheme', 'https://example.org/doc', 'ms-excel:ofe|u|https://example.org/doc'],
+    ['autolink outer scheme', 'https://example.org/doc', '<ms-excel:ofe|u|https://example.org/doc>'],
+    ['trusted URL only in a title', 'https://example.org/doc', '[文档](ms-excel:evil "https://example.org/doc 说明")'],
+    ['invented custom protocol', 'https://example.org/doc', '[文档](custom-app:open)'],
+    ['parenthesized path suffix', 'https://example.org/path', 'https://example.org/path(extra)'],
+    ['nested-path prefix', 'https://example.org/A_(b(c))', 'https://example.org/A_'],
+    ['closing-bracket path suffix', 'https://example.org/path', 'https://example.org/path]extra'],
+    ['backslash ambiguity', 'https://example.org/path\\extra', 'https://example.org/path\\extra'],
+    ['quoted credentials', "https://owner'@example.org/path", "https://owner'@example.org/path"],
+    ['embedded credentials', 'https://owner:password@example.org/path', 'https://owner:password@example.org/path'],
+    ['executable scheme', 'javascript:alert(1)', 'javascript:alert(1)'],
+  ])('refuses an owner URL with %s', async (_name, supplied, returned) => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: `参考 ${returned}` }) })
+    await h.say(`请引用 ${supplied}`)
+    await h.tick()
+    expect(h.channel.texts()[0]).toContain('链接')
+    expect(h.entry('inbox/im:e1').disposition.kind).toBe('fallback')
+  })
+
+  it('does not borrow URL authority from another message in the batch, material, or recent history', async () => {
+    const url = 'https://example.org/private-path'
+    const h = harness({ judge: ({ batch }) => decisions(...batch.filter((item) => item.origin === 'owner').map((item) => ({ kind: 'answer', message: item.id, text: '收到' }))) })
+    await h.say(`记录 ${url}`)
+    await h.tick()
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch.find((item) => item.text === '直接回复')!.id, text: `参考 ${url}` }))
+    await h.say('直接回复')
+    await h.say(`另一条消息 ${url}`)
+    await h.signal({ kind: 'message', origin: 'material', text: url })
+    await h.tick()
+    expect(h.entry('inbox/im:e2').disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining('links outside')] })
+    expect(h.channel.texts()).not.toContain(`参考 ${url}`)
   })
 
   it('delivers an answer that names files and versions', async () => {

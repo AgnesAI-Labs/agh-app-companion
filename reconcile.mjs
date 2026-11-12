@@ -17,6 +17,13 @@ export async function reconcile(deps) {
     const tx = deps.tx()
     tx.store.transaction(() => tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq }))
   }
+  for (const task of allTasks(deps.tx()).filter((t) => t.state === 'done' && t.sessionId)) {
+    const row = rows.get(task.sessionId)
+    if (row && !row.archived && row.status.flags.includes('waitingOnUserInput')) {
+      const tx = deps.tx()
+      tx.store.transaction(() => transit(tx, task.id, 'questionRecovered', { quiet: true }))
+    }
+  }
   const tasks = allTasks(deps.tx()).filter((t) => SLOT_STATES.includes(t.state) && t.sessionId)
   for (const task of tasks) {
     const row = rows.get(task.sessionId)
@@ -25,17 +32,30 @@ export async function reconcile(deps) {
       tx.store.transaction(() => transit(tx, task.id, 'sessionLost'))
       continue
     }
-    const { events, lastSeq } = await deps.sessions.events(task.sessionId, { afterSeq: task.cursor })
+    await deps.channel?.watchSession?.(task.sessionId).catch(() => {})
+    const page = await deps.sessions.events(task.sessionId, { afterSeq: task.cursor })
+    const status = await deps.sessions.status(task.sessionId)
+    const latestTurn = page.events.findLast((event) => event.kind === 'turn')
+    const deferCompletion = status.flags.includes('waitingOnUserInput') || (!task.question && status.kind === 'active')
+    const deferred = deferCompletion && latestTurn?.status === 'completed' ? latestTurn : undefined
+    const lastSeq = deferred ? Math.min(page.lastSeq, deferred.seq - 1) : page.lastSeq
+    // A retained older completion must not hide the failure or cancellation of its continuation.
+    const events = page.events.filter((event) => event.seq <= lastSeq && (event.kind !== 'turn' || event === latestTurn))
     const ended = events.some((e) => e.kind === 'turn' && e.status === 'completed')
-    const reply = ended ? ((await deps.sessions.result(task.sessionId)).text ?? '') : ''
+    // Recovery from historical done has already consumed its completion. A close need not start a turn.
+    const settled = !latestTurn && task.state === 'waiting' && !task.question && status.kind === 'idle' && !status.flags.length
+    const result = ended || settled ? await deps.sessions.result(task.sessionId) : undefined
+    const reply = result?.text ?? ''
     const usage = reading(await deps.sessions.usage(task.sessionId))
     const closed = events.some((e) => e.kind === 'turn' && (e.status === 'completed' || e.status === 'failed' || e.status === 'cancelled'))
     const publishes = await readPublishes(deps.sessions, task, events, closed)
     const tx = deps.tx()
     tx.store.transaction(() => {
       tx.store.putTask({ ...getTask(tx, task.id), cursor: lastSeq, ...publishes })
-      waitState(tx, task.id, row.status)
-      for (const event of events) apply(tx, task.id, event, reply)
+      waitState(tx, task.id, status)
+      for (const event of events) apply(tx, task.id, event, reply, status.flags.includes('waitingOnUserInput'))
+      if (settled && result?.turn?.status === 'completed')
+        complete(tx, task.id, reply)
       account(tx, task.id, usage)
     })
   }
@@ -102,8 +122,8 @@ function reading(usage) {
 }
 
 /**
- * The owner approves on the local Web: a chat card cannot answer an approval and the platform sends
- * no notice for a managed session, so the companion says, once per approval, that the task waits.
+ * The platform projects approval cards for watched children. The companion also records one task
+ * wait notice, which remains useful when the owner opens the Web desk.
  * The key names the session generation and the approval's seq, so a replay or restart repeats nothing.
  * @param {import('./tasks.mjs').Tx} tx @param {import('./tasks.mjs').Task} task @param {number} seq
  */
@@ -113,10 +133,10 @@ function waitForApproval(tx, task, seq) {
 }
 
 /** @param {import('./tasks.mjs').Tx} tx @param {string} taskId @param {import('./sessions.mjs').SessionEvent} event @param {string} reply */
-function apply(tx, taskId, event, reply) {
+function apply(tx, taskId, event, reply, waitingOnUserInput) {
   const task = getTask(tx, taskId)
   if (event.kind === 'approval' && event.state === 'expired') transit(tx, taskId, 'approvalExpired')
-  if (event.kind === 'approval' && event.state === 'decided' && task.state === 'waiting') transit(tx, taskId, 'ownerAnswered')
+  if (event.kind === 'approval' && event.state === 'decided' && task.state === 'waiting' && !waitingOnUserInput) transit(tx, taskId, 'ownerAnswered')
   // A permission request first seen pending only tells the owner the task waits. Its end arrives as
   // an approvalOutcome: only the owner's own refusal counts toward the limit and only the owner's
   // allow ends the streak. Expiry, full access and every automatic answer neither count nor reset.
@@ -133,8 +153,15 @@ function apply(tx, taskId, event, reply) {
     }
   }
   if (event.kind !== 'turn' || event.status === 'running' || event.status === 'waiting') return
+  if (event.status === 'completed' && waitingOnUserInput) return
   if (event.status === 'failed') return void transit(tx, taskId, 'sessionFailed')
   if (event.status === 'cancelled') return void transit(tx, taskId, 'turnInterrupted')
+  complete(tx, taskId, reply)
+}
+
+/** Settle a completed backend turn, including a historical result whose event was already consumed. */
+function complete(tx, taskId, reply) {
+  const task = getTask(tx, taskId)
   const reason = task.attach?.sent ? handbackReason(reply) : undefined
   if (reason !== undefined) return handback(tx, task, reason)
   if (task.attach?.sent) tx.store.putTask({ ...task, attach: null })

@@ -138,6 +138,10 @@ export function fakeSessions(
         status,
       }))
     },
+    async status(sessionId) {
+      const status = get(sessionId).status
+      return { ...status, flags: [...status.flags] }
+    },
     async events(sessionId, { afterSeq = 0 } = {}) {
       const session = get(sessionId)
       return {

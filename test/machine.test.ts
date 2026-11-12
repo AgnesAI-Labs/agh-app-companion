@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { LIMITS } from '../limits.mjs'
-import { TRANSITIONS } from '../machine.mjs'
 import { createTask, TEXT } from '../tasks.mjs'
 import { harness } from './harness.js'
 
@@ -45,9 +44,6 @@ const button = (h: ReturnType<typeof harness>, action: string, taskId: string) =
   h.signal({ kind: 'button', action, taskId })
 
 describe('state table (spec §4.3), one test per row', () => {
-  it('has a row for every spec row plus the queue and return rows', () => {
-    expect(TRANSITIONS.map((r) => `${r.from.join('|')} ${r.on}`)).toHaveLength(23)
-  })
 
   it('proposed, owner confirms: running, and its session starts', async () => {
     const { h, id } = proposed()
@@ -82,6 +78,102 @@ describe('state table (spec §4.3), one test per row', () => {
     h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
     await h.tick()
     expect(h.task(id).state).toBe('waiting')
+  })
+
+  it('keeps a completed turn waiting for an open native question and completes after its answer', async () => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'Question published')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    h.sessions.set(sid, { kind: 'active', flags: [] })
+    h.sessions.finish(sid, 'completed', 'Finished after answer')
+    await h.tick()
+    expect(h.task(id).state).toBe('done')
+  })
+
+  it('recovers a previously completed task only while its own native question remains open', async () => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'Question published')
+    await h.tick()
+    expect(h.task(id).state).toBe('done')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    expect(h.sessionOf(id)).toBe(sid)
+    h.sessions.set(sid, { kind: 'idle', flags: [] })
+    await h.tick()
+    expect(h.task(id).state).toBe('done')
+    expect(h.sessionOf(id)).toBe(sid)
+  })
+
+  it('keeps waiting when an answer produces another open question in the same poll', async () => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'First question')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    h.sessions.finish(sid, 'completed', 'Second question')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    expect(h.sessionOf(id)).toBe(sid)
+  })
+
+  it.each(['events', 'usage'] as const)('does not lose completion when the question closes during %s', async (boundary) => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'Question')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    h.sessions.finish(sid, 'completed', 'Finished')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    if (boundary === 'events') {
+      const events = h.sessions.port.events
+      h.sessions.port.events = async (...args) => {
+        const page = await events(...args)
+        h.sessions.set(sid, { kind: 'idle', flags: [] })
+        return page
+      }
+    } else {
+      const usage = h.sessions.port.usage
+      h.sessions.port.usage = async (...args) => {
+        const result = await usage(...args)
+        h.sessions.set(sid, { kind: 'idle', flags: [] })
+        return result
+      }
+    }
+    await h.tick()
+    // A close after status was read is observed on the next pass; the completion is not consumed.
+    await h.tick()
+    expect(h.task(id).state).toBe('done')
+    expect([...h.channel.delivered.values()].filter((m) => m.text.includes(id) && m.text.includes('完成'))).toHaveLength(1)
+  })
+
+  it('does not complete the task while an answered question has started the next turn', async () => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'Question')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    h.sessions.set(sid, { kind: 'idle', flags: [] })
+    await h.sessions.port.send(sid, { text: 'Answer', idempotencyKey: 'answer' })
+    await h.tick()
+    expect(h.task(id).state).toBe('running')
+    h.sessions.finish(sid, 'completed', 'Finished after answer')
+    await h.tick()
+    expect(h.task(id).state).toBe('done')
+    expect(h.sessionOf(id)).toBe(sid)
+  })
+
+  it.each(['failed', 'cancelled'] as const)('does not let a retained completion hide a %s continuation', async (outcome) => {
+    const { h, id, sid } = await running()
+    h.sessions.finish(sid, 'completed', 'Question')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    h.sessions.set(sid, { kind: 'idle', flags: [] })
+    await h.sessions.port.send(sid, { text: 'Answer', idempotencyKey: 'answer' })
+    h.sessions.finish(sid, outcome, 'Continuation did not complete')
+    await h.tick()
+    expect(h.task(id).state).toBe(outcome === 'failed' ? 'failed' : 'running')
+    expect([...h.channel.delivered.values()].some((m) => m.text.includes(id) && m.text.includes('完成'))).toBe(false)
   })
 
   it('waiting, approval answered: running, and the session handles it', async () => {

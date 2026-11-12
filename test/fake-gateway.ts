@@ -56,6 +56,8 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
   const ledger = new Map<string, Delivery>()
   const shown: { chatId: string; deliveryKey: string; text: string; title: string; body: string; actions?: Action[]; messageId: string }[] = []
   const inputs: { deliveryKey: string; text: string; title?: string; actions?: Action[] }[] = []
+  const watches: string[] = []
+  const edits: { messageId: string; text: string; title?: string }[] = []
   const rejected: { code: string; text: string }[] = []
   let pairing: Pairing | undefined =
     options.paired === false ? undefined : { ...OWNER, running: options.running ?? true, textChars: options.textChars ?? OWNER.textChars }
@@ -105,6 +107,20 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
       if (mode === 'lostResponse') throw new Error('read timed out')
       return { messageId }
     },
+    async watchSession(pairingId: string, sessionId: string) {
+      if (!pairing || pairing.id !== pairingId) throw new Refusal('NOT_PAIRED')
+      if (mode === 'down') throw new Error('channel down')
+      watches.push(sessionId)
+    },
+    async update(pairingId: string, messageId: string, input: { text: string; title?: string }) {
+      if (!pairing || pairing.id !== pairingId) throw new Refusal('NOT_PAIRED')
+      if (mode === 'down') throw new Error('channel down')
+      const row = shown.find((item) => item.messageId === messageId)
+      if (!row) throw new Refusal('CAPABILITY_DENIED')
+      edits.push({ messageId, ...input })
+      row.body = input.text
+      delete row.actions
+    },
     async delivery(pairingId: string, deliveryKey: string): Promise<Delivery> {
       if (!pairing || pairingId !== pairing.id) throw new Refusal('NOT_PAIRED')
       return ledger.get(deliveryKey) ?? { state: 'unknown' }
@@ -120,6 +136,8 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
     channels,
     port: channelGateway(channels)!,
     shown,
+    watches,
+    edits,
     inputs,
     rejected,
     ledger,

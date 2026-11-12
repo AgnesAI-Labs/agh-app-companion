@@ -46,6 +46,24 @@ describe('ask_owner', () => {
     expect([...h.channel.delivered.values()].filter((m) => m.text.includes('等你回答'))).toHaveLength(1)
   })
 
+  it('retains a mixed native and ask_owner completion until the native question closes', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    await asker(h)(sid, { question: '下一步怎么做？', options: OPTIONS })
+    h.sessions.finish(sid, 'completed', 'Questions published')
+    h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    expect(h.channel.texts().some((text) => text.includes('等你回答'))).toBe(false)
+    h.sessions.set(sid, { kind: 'idle', flags: [] })
+    await h.tick()
+    await h.tick()
+    expect(h.task(id).state).toBe('waiting')
+    expect([...h.channel.delivered.values()].filter((m) => m.text.includes('等你回答'))).toHaveLength(1)
+    expect(h.channel.texts().some((text) => text.includes('完成'))).toBe(false)
+  })
+
   it('a bare option number reaches the same session without the judge, and the task runs again', async () => {
     const h = harness()
     const { id, sid } = await asking(h)
@@ -175,11 +193,14 @@ describe('ask_owner', () => {
     expect(h.task(id)).toMatchObject({ state: 'abandoned', question: null })
   })
 
-  it('tells the worker to use ask_owner and no longer to write questions in the reply', async () => {
+  it('tells the worker how native questions and ask_owner differ', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const first = h.sessions.sessions.get(h.sessionOf(id))!.inputs[0]!
-    expect(first).toContain('调用 ask_owner 工具，把问题和编号选项交给伴侣，然后结束本轮回复；主人的回答会作为下一条消息送来。')
+    expect(first).toContain('ask_user_question')
+    expect(first).toContain('ask_owner')
+    expect(first).toContain('主人的回答会作为下一条消息送来')
+    expect(first).toContain('同一个问题不要同时调用两种工具')
     expect(first).not.toContain('在回复里直接写出问题和编号选项')
   })
 })

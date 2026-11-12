@@ -32,7 +32,7 @@ export const LIMITS = Object.freeze({
   recentWindowMs: DAY,
   snapshotTasks: 50,
   snapshotEndedMs: 7 * DAY,
-  answerMaxChars: 200,
+  answerMaxChars: 8000,
   titleMaxChars: 120,
   candidateMax: 3,
   inboxTtlMs: 7 * DAY,

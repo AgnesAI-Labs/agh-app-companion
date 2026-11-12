@@ -137,7 +137,13 @@ export async function startEngine(
     channelProblem =
       'the platform does not provide channel targets (init.channels); the companion runs without a chat channel'
   /** The engine reads the channel through this on every delivery, so one opened later is used at once. */
-  const channelPort = Object.freeze({ deliver: (/** @type {any} */ message) => (channel ?? NO_CHANNEL).deliver(message) })
+  const channelPort = Object.freeze({
+    deliver: (/** @type {any} */ message) => (channel ?? NO_CHANNEL).deliver(message),
+    replyBudget: async () => channel ? channel.replyBudget() : limits.answerMaxChars,
+    prepareReply: async (/** @type {string} */ text) => channel?.prepareReply(text),
+    watchSession: async (/** @type {string} */ sessionId) => { await channel?.watchSession(sessionId) },
+    refresh: async () => { await openIfNone(); await channel?.refresh() },
+  })
 
   /** Opens the channel on the current pairing if none is open; at most one open at a time. */
   let opening = Promise.resolve()

@@ -38,8 +38,8 @@
  *       `unknown` is the same key, so the chat platform may drop it as a duplicate.
  *   A9  Lock screen: the first line is the `title`, sent as a field so the chat shows it bold, and
  *       the body is previewed on the owner's own phone.
- *   A10 Binding: managed-sessions `start` takes no chat binding, so `binding()` is not called and
- *       worker approvals are answered in the Web only.
+ *   A10 Binding: watchSession observes a session owned by this service. The platform sends native
+ *       questions and approvals, admits the actual owner callback, and reconciles Web settlement.
  *   A11 Event ids are at most 128 characters.
  *   A12 Text only: attachments never arrive, and a message without text is dropped.
  *   A13 Delivery to the plugin: `init.channels.onEvent(handler)` registers the one handler of this
@@ -68,6 +68,8 @@
  * @typedef {{
  *   pairing(): Promise<Pairing | undefined>,
  *   send(pairingId: string, input: { deliveryKey: string, text: string, title?: string, actions?: ChannelAction[] }): Promise<{ messageId: string }>,
+ *   watchSession?(pairingId: string, sessionId: string): Promise<void>,
+ *   update?(pairingId: string, messageId: string, input: { text: string, title?: string, actions?: ChannelAction[] }): Promise<void>,
  *   delivery(pairingId: string, deliveryKey: string): Promise<Delivery>,
  *   unpair(pairingId: string): Promise<void>,
  *   onEvent(handler: (event: unknown) => Promise<void>): void,
