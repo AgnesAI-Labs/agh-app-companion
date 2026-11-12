@@ -1,6 +1,6 @@
 {
   "name": "@agh-apps/companion",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "license": "Apache-2.0",
   "keywords": [
@@ -54,7 +54,7 @@
       {
         "id": "ext:@agh-apps/companion/main",
         "export": "main",
-        "apiRange": "^5.12.0",
+        "apiRange": "^5.13.0",
         "runtime": "in-process",
         "inject": [
           "services",

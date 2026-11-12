@@ -18,6 +18,22 @@ export type Pairing = {
   textChars: number
 }
 
+export type Action = { id: string; label: string; style?: string }
+
+/** Extension API 5.13's limits on `title` and `actions`; a send outside them is refused as the platform would. */
+function checkCard(input: { title?: string; actions?: Action[] }) {
+  const { title, actions } = input
+  if (title !== undefined && !(title.length >= 1 && title.length <= 100 && !/\n/.test(title))) throw new Error('INVALID title')
+  if (actions === undefined) return
+  const ids = new Set(actions.map((a) => a.id))
+  const valid =
+    actions.length >= 1 &&
+    actions.length <= 6 &&
+    ids.size === actions.length &&
+    actions.every((a) => /^[A-Za-z0-9:_-]{1,64}$/.test(a.id) && a.label.length >= 1 && a.label.length <= 40 && !/\n/.test(a.label))
+  if (!valid) throw new Error('INVALID actions')
+}
+
 export const OWNER: Pairing = {
   id: 'a'.repeat(32),
   instanceId: 'im-1',
@@ -38,7 +54,8 @@ class Refusal extends Error {
 
 export function fakeGateway(options: { paired?: boolean; running?: boolean; textChars?: number } = {}) {
   const ledger = new Map<string, Delivery>()
-  const shown: { chatId: string; deliveryKey: string; text: string; title: string; body: string; messageId: string }[] = []
+  const shown: { chatId: string; deliveryKey: string; text: string; title: string; body: string; actions?: Action[]; messageId: string }[] = []
+  const inputs: { deliveryKey: string; text: string; title?: string; actions?: Action[] }[] = []
   const rejected: { code: string; text: string }[] = []
   let pairing: Pairing | undefined =
     options.paired === false ? undefined : { ...OWNER, running: options.running ?? true, textChars: options.textChars ?? OWNER.textChars }
@@ -58,8 +75,10 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
     onPairingChange(handler: () => void) {
       changeHandlers.push(handler)
     },
-    async send(pairingId: string, input: { deliveryKey: string; text: string }) {
+    async send(pairingId: string, input: { deliveryKey: string; text: string; title?: string; actions?: Action[] }) {
       sends++
+      checkCard(input)
+      inputs.push(structuredClone(input))
       if (!pairing || pairingId !== pairing.id) throw new Refusal('NOT_PAIRED')
       if (!pairing.running) throw new Refusal('CHANNEL_UNAVAILABLE')
       if (!input.text || input.text.length > pairing.textChars) {
@@ -79,8 +98,9 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
         throw new Error('timed out')
       }
       const messageId = `om-${++seq}`
-      const [title = '', ...rest] = input.text.split('\n\n')
-      shown.push({ chatId: pairing.chatId, deliveryKey: input.deliveryKey, text: input.text, title, body: rest.join('\n\n'), messageId })
+      const [first = '', ...rest] = input.text.split('\n\n')
+      const parts = input.title === undefined ? { title: first, body: rest.join('\n\n') } : { title: input.title, body: input.text }
+      shown.push({ chatId: pairing.chatId, deliveryKey: input.deliveryKey, text: input.text, ...parts, ...(input.actions ? { actions: input.actions } : {}), messageId })
       ledger.set(input.deliveryKey, { state: 'delivered', messageId })
       if (mode === 'lostResponse') throw new Error('read timed out')
       return { messageId }
@@ -100,6 +120,7 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
     channels,
     port: channelGateway(channels)!,
     shown,
+    inputs,
     rejected,
     ledger,
     get sends() {
@@ -143,6 +164,22 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
         sender: fields.sender ?? { userId: OWNER.userId },
         text,
         ...(fields.quotedMessageId ? { quotedMessageId: fields.quotedMessageId } : {}),
+      }
+    },
+    /** A click on a button of the message `messageId`, in the platform's ChannelTargetEvent shape. */
+    click(messageId: string, actionId: string, fields: Record<string, any> = {}) {
+      const id = fields.eventId ?? `ev-${++eventSeq}`
+      return {
+        kind: 'action',
+        origin: 'owner',
+        pairingId: fields.pairingId ?? pairing?.id ?? OWNER.id,
+        instanceId: 'im-1',
+        eventId: id,
+        at: fields.at ?? '2026-11-10T08:00:00.000Z',
+        chat: fields.chat ?? { id: OWNER.chatId, type: 'dm' },
+        sender: fields.sender ?? { userId: OWNER.userId },
+        messageId,
+        actionId,
       }
     },
     stranger: { userId: 'u-stranger' },

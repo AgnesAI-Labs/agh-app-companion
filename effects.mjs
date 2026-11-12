@@ -8,7 +8,7 @@ import { enqueueMessage, getTask, parkRefused, TEXT, transit } from './tasks.mjs
  * `taskId:eventSeq`, message: deliveryKey), so replaying one after a crash between the call and its
  * mark is absorbed by the platform or the channel.
  *
- * @typedef {{ deliveryKey: string, text: string, detail: string | null, card: import('./tasks.mjs').ChoiceCard | null }} Outbound
+ * @typedef {{ deliveryKey: string, text: string, detail: string | null, card: import('./tasks.mjs').ChoiceCard | null, ask?: import('./tasks.mjs').AskMark | null }} Outbound
  * @typedef {{ deliver(message: Outbound): Promise<{ messageId: string }> }} Channel
  *   the IM channel port; it must drop a repeated deliveryKey (IM channel plan)
  * @typedef {{
@@ -145,7 +145,7 @@ export async function deliverOutbox(deps) {
   for (const { key, value } of pending) {
     let receipt
     try {
-      receipt = await deps.channel.deliver({ deliveryKey: value.deliveryKey, text: value.text, detail: value.detail, card: value.card })
+      receipt = await deps.channel.deliver({ deliveryKey: value.deliveryKey, text: value.text, detail: value.detail, card: value.card, ask: value.ask ?? null })
     } catch {
       return
     }

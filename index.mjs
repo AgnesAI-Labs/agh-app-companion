@@ -37,7 +37,7 @@ const taskRepo = (task) => (typeof (/** @type {any} */ (task).repo) === 'string'
 
 /**
  * The chat gateway port, from the platform's managed channel targets (`init.channels`, Extension API
- * 5.12). Absent on a host without them.
+ * 5.13). Absent on a host without them.
  * @param {import('@agnes/extension-api').ProfileManagedInit} init
  * @returns {import('./channel-contract.mjs').ChannelGateway | undefined}
  */
