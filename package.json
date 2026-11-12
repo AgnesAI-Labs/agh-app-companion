@@ -54,7 +54,7 @@
       {
         "id": "ext:@agh-apps/companion/main",
         "export": "main",
-        "apiRange": "^5.13.0",
+        "apiRange": "^5.15.0",
         "runtime": "in-process",
         "inject": [
           "services",
@@ -473,7 +473,6 @@
         "profile": {
           "toolPolicy": {
             "deny": [
-              "ask_user_question",
               "skill_helper_create",
               "skill_helper_import",
               "skill_helper_install"
@@ -492,7 +491,7 @@
               "on_unavailable": "park"
             },
             "ext_ui": {
-              "unattended": "decline"
+              "unattended": "park"
             }
           }
         },

@@ -8,7 +8,7 @@ import { reconcile } from './reconcile.mjs'
 import { startRequest } from './sessions.mjs'
 import { parseSignal, route } from './signals.mjs'
 import {
-  allTasks, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, isAsking, label, noteRefusal, stateText,
+  allTasks, answerRejection, choiceCard, createTask, dispose, enqueueMessage, forward, getTask, hash, isAsking, label, noteRefusal, stateText,
   statusText, TEXT, transit,
 } from './tasks.mjs'
 
@@ -33,6 +33,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
   const workspaces = settings.workspaces.map((w) => w.shortName)
   /** @returns {import('./tasks.mjs').Tx} */
   const tx = () => ({ store, at: now(), limits, workspaces })
+  const replyBudget = async () => Math.min(limits.answerMaxChars, (await channel.replyBudget?.()) ?? limits.answerMaxChars)
   /** @type {import('./effects.mjs').EffectDeps} */
   const effects = {
     tx,
@@ -167,7 +168,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
         const { sessionId } = await sessions.start(
           startRequest('judge', {
             workspace: settings.dedicatedWorkspace,
-            input: judgeInput({ snapshot: view, recent, batch: items }),
+            input: judgeInput({ snapshot: view, recent, batch: items, answerMaxChars: await replyBudget() }),
             startKey: `judge:${hash(`${batch.startedAt}\n${batch.keys.join('\n')}`).slice(0, 24)}:${batch.attempt}`,
           }),
         )
@@ -191,7 +192,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
         store.set('judge/batch', batch)
         continue
       }
-      return commit(entries, items, parsed.decisions, recent, view)
+      return commit(entries, items, parsed.decisions, recent, view, await replyBudget())
     }
   }
 
@@ -225,7 +226,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     })
   }
 
-  function commit(entries, items, decisions, recent, view) {
+  function commit(entries, items, decisions, recent, view, answerMaxChars) {
     const t = tx()
     const byId = new Map(entries.map((e) => [e.key, e]))
     const textOf = new Map(items.map((i) => [i.id, i.text]))
@@ -236,7 +237,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
       workspaces,
       taskExists: routing.exists,
       storeFull: store.usage().ratio >= limits.storeRefuseRatio,
-      limits,
+      limits: { ...limits, answerMaxChars },
     })
     const notes = new Map()
     for (const { decision, reason } of filtered.rejected) {
@@ -280,7 +281,8 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
           outcome.set(id, { kind: 'asked', taskIds: onCard.slice(0, limits.candidateMax) })
           continue
         }
-        enqueueMessage(t, { deliveryKey: `fallback:${id}`, text: TEXT.fallback, about: id })
+        const rejection = filtered.rejected.find(({ decision }) => decision.kind === 'answer' && decision.message === id)
+        enqueueMessage(t, { deliveryKey: `fallback:${id}`, text: answerRejection(rejection?.reason, answerMaxChars), about: id })
         outcome.set(id, { kind: 'fallback', taskIds: [] })
       }
       for (const entry of entries) {
@@ -308,6 +310,7 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
       await reconcile(effects)
       await runSessionOps(effects)
       await deliverOutbox(effects)
+      await channel.refresh?.()
       housekeeping(tx())
     },
   })

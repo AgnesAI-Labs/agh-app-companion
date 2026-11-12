@@ -50,6 +50,8 @@ export function channelGateway(channels) {
       if (!isPairing(found)) throw new Error('the platform returned a pairing the companion cannot read')
       return found
     },
+    ...(typeof port.watchSession === 'function' ? { watchSession: (pairingId, sessionId) => guarded(() => port.watchSession(pairingId, sessionId)) } : {}),
+    ...(typeof port.update === 'function' ? { update: (pairingId, messageId, input) => guarded(() => port.update(pairingId, messageId, input)) } : {}),
     send: (pairingId, input) => guarded(() => port.send(pairingId, input)),
     async delivery(pairingId, deliveryKey) {
       const state = await guarded(() => port.delivery(pairingId, deliveryKey))

@@ -1,7 +1,8 @@
 import { SLOT_STATES } from './machine.mjs'
 import { SessionRefusal, START_ATTEMPTS } from './platform-sessions.mjs'
 import { startRequest } from './sessions.mjs'
-import { enqueueMessage, getTask, parkRefused, TEXT, transit } from './tasks.mjs'
+import { ChannelRefusal } from './channel-targets.mjs'
+import { enqueueMessage, getTask, hash, parkRefused, TEXT, transit } from './tasks.mjs'
 
 /**
  * Runs committed effects. Each carries its idempotency key (start: `taskId:generation`, send:
@@ -9,7 +10,7 @@ import { enqueueMessage, getTask, parkRefused, TEXT, transit } from './tasks.mjs
  * mark is absorbed by the platform or the channel.
  *
  * @typedef {{ deliveryKey: string, text: string, detail: string | null, card: import('./tasks.mjs').ChoiceCard | null, ask?: import('./tasks.mjs').AskMark | null }} Outbound
- * @typedef {{ deliver(message: Outbound): Promise<{ messageId: string }> }} Channel
+ * @typedef {{ deliver(message: Outbound): Promise<{ messageId: string }>, replyBudget?(): Promise<number>, prepareReply?(text: string): Promise<string | undefined>, watchSession?(sessionId: string): Promise<void>, refresh?(): Promise<void> }} Channel
  *   the IM channel port; it must drop a repeated deliveryKey (IM channel plan)
  * @typedef {{
  *   tx: () => import('./tasks.mjs').Tx, sessions: import('./sessions.mjs').ManagedSessions, channel: Channel,
@@ -79,6 +80,7 @@ export async function runSessionOps(deps) {
         else deps.tx().store.set(key, { ...op, failures })
         continue
       }
+      await deps.channel.watchSession?.(sessionId).catch(() => {})
       const done = deps.tx()
       done.store.transaction(() => {
         done.store.putTask({ ...getTask(done, op.taskId), sessionId, cursor: 0, reading: { tokens: null, cost: null } })
@@ -140,13 +142,34 @@ export async function deliverOutbox(deps) {
   const pending = deps
     .tx()
     .store.scan('outbox/')
-    .filter((row) => row.value.sentAt === null)
+    .filter((row) => row.value.sentAt === null && row.value.replyDelivery !== 'blocked')
     .sort((a, b) => (a.value.at < b.value.at ? -1 : a.value.at > b.value.at ? 1 : 0))
-  for (const { key, value } of pending) {
+  for (const { key, value: stored } of pending) {
+    let value = stored
     let receipt
     try {
+      if (value.replyDelivery === 'unprepared') {
+        const prepared = await deps.channel.prepareReply?.(value.text)
+        if (prepared !== undefined) {
+          value = { ...value, text: prepared, replyDelivery: 'prepared' }
+          // Freeze the actual payload before a call can have an uncertain external result.
+          deps.tx().store.set(key, value)
+        }
+      }
       receipt = await deps.channel.deliver({ deliveryKey: value.deliveryKey, text: value.text, detail: value.detail, card: value.card, ask: value.ask ?? null })
-    } catch {
+    } catch (error) {
+      if (value.deliveryKey.startsWith('answer:') && error instanceof ChannelRefusal && error.code === 'TOO_LARGE') {
+        const tx = deps.tx()
+        tx.store.transaction(() => {
+          tx.store.set(key, { ...value, replyDelivery: 'blocked' })
+          enqueueMessage(tx, {
+            deliveryKey: `reply-budget:${hash(value.deliveryKey)}`,
+            text: '这次回复的投递结果未确认，当前渠道容量又不足，无法安全重发。其他消息仍会继续处理。',
+            ...(value.about ? { about: value.about } : {}),
+          })
+        })
+        continue
+      }
       return
     }
     const tx = deps.tx()

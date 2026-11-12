@@ -37,6 +37,7 @@
  *   start(request: StartRequest): Promise<{ sessionId: string, created: boolean }>,
  *   send(sessionId: string, input: { text: string, idempotencyKey: string }): Promise<SendResult>,
  *   list(): Promise<readonly SessionRow[]>,
+ *   status(sessionId: string): Promise<SessionStatus>,
  *   events(sessionId: string, options?: { afterSeq?: number }): Promise<{ events: readonly SessionEvent[], lastSeq: number }>,
  *   result(sessionId: string): Promise<SessionResult>,
  *   usage(sessionId: string): Promise<SessionUsage>,

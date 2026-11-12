@@ -1,6 +1,6 @@
 import { ChannelRefusal } from './channel-targets.mjs'
 import { parseChannelEvent } from './channel-contract.mjs'
-import { isAsking } from './tasks.mjs'
+import { answerRejection, isAsking } from './tasks.mjs'
 
 /**
  * The chat channel adapter: the engine's `Channel` port outbound, InboundSignal inbound. Authority
@@ -17,6 +17,9 @@ import { isAsking } from './tasks.mjs'
  * @typedef {{ kind: 'accepted' | 'duplicate', key: string } | { kind: 'dropped', reason: string } | { kind: 'invalid', error: string }} ReceiveResult
  *   every result is final: the platform does not redeliver an event once `receive` returns
  * @typedef {import('./effects.mjs').Channel & {
+ *   replyBudget(): Promise<number>,
+ *   prepareReply(text: string): Promise<string>,
+ *   watchSession(sessionId: string): Promise<void>,
  *   receive(raw: unknown): Promise<ReceiveResult>, refresh(): Promise<void>, status(): string | null,
  *   owner: import('./store.mjs').ChannelOwner,
  * }} ChatChannel
@@ -104,6 +107,8 @@ export function compose(message, textChars) {
   const detail = message.detail ? showLinks(message.detail) : ''
   const body = detail ? `${message.text}\n\n${detail}` : message.text
   const title = message.card ? CHANNEL_TITLES.choice : CHANNEL_TITLES.message
+  if (message.deliveryKey.startsWith('answer:') && body.length > textChars)
+    throw new ChannelRefusal('TOO_LARGE', 'direct reply exceeds the current channel text budget')
   const actions = buttons(message)
   const numbered = (items) => items.map((t, i) => `${i + 1}. ${showLinks(t)}`).join('\n')
   let tail = ''
@@ -138,6 +143,7 @@ export async function openChannel({ gateway, store, receive }) {
   if (!opened) return { ok: false, status: STATUS.notPaired }
   if (!opened.running) return { ok: false, status: STATUS.notRunning }
   const bound = opened
+  let textBudget = bound.textChars
   /** @type {string | null} */
   let status = null
   let unconfirmed = false
@@ -156,6 +162,7 @@ export async function openChannel({ gateway, store, receive }) {
     else if (!now.running) status = STATUS.notRunning
     else {
       status = null
+      textBudget = now.textChars
       return now
     }
     return null
@@ -239,8 +246,44 @@ export async function openChannel({ gateway, store, receive }) {
       }
     },
 
-    async refresh() {
+    async replyBudget() {
       await check()
+      // Staging an answer is not delivery authority; an offline channel still gates every send.
+      return textBudget
+    },
+
+    async prepareReply(text) {
+      const pairing = await check()
+      if (!pairing) throw new Error(/** @type {string} */ (status))
+      return text.length <= pairing.textChars
+        ? text
+        : clip(answerRejection('answer is too long', pairing.textChars), pairing.textChars)
+    },
+
+    async watchSession(sessionId) {
+      const pairing = await check()
+      if (pairing && gateway.watchSession) await gateway.watchSession(pairing.id, sessionId)
+    },
+
+    async refresh() {
+      const pairing = await check()
+      if (!pairing || !gateway.update) return
+      for (const { key, value: row } of store.scan('outbox/')) {
+        if (!row.messageId || row.cardSettled || (!row.ask?.options.length && !row.card)) continue
+        const taskId = row.taskIds.at(0)
+        const task = taskId ? store.getTask(taskId) : undefined
+        const closed = row.card ? !!row.chosen : !task || !isAsking(task) || task.question?.at !== row.ask?.at
+        if (!closed) continue
+        try {
+          await gateway.update(pairing.id, row.messageId, {
+            title: '伴侣：已处理', text: clip(`${row.text}\n\n已处理，此卡片不再接受选择。`, pairing.textChars),
+          })
+        } catch (error) {
+          if (error instanceof ChannelRefusal && error.code === 'NOT_PAIRED') throw error
+          continue
+        }
+        store.set(key, { ...row, cardSettled: true })
+      }
     },
 
     status: () => status ?? (unconfirmed ? STATUS.unconfirmed : null),

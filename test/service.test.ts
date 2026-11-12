@@ -118,6 +118,74 @@ describe('companion service', () => {
     await s.shutdown()
   })
 
+  it.each([
+    ['fits', 1200, false],
+    ['exceeds the channel budget', 120, false],
+    ['channel budget shrinks during the judge turn', 1200, true],
+  ] as const)('handles a direct Markdown reply when it %s without creating a task', async (_name, budget, shrink) => {
+    const gateway = fakeGateway({ textChars: budget })
+    const text = '# Markdown\n\n**完整直答**\n\n' + '这段文字不应被截断。'.repeat(30) + '\n\n```js\nconsole.log("end");\n```\n\n[飞书](https://open.feishu.cn/)'
+    const sessions = fakeSessions({ reply(request, input) {
+      if (request.bundle !== ROLES.judge.bundle) throw new Error('A direct reply must not start a worker')
+      const { batch } = readJudgeInput(input)
+      if (shrink) gateway.rebind({ textChars: 120 })
+      return { outcome: 'completed', text: decisions({ kind: 'answer', message: batch[0]!.id, text }) }
+    } })
+    const s = service({ sessions: sessions.port, gateway })
+    const svc = await s.started
+    await svc.receive(gateway.message('直接回复 Markdown，引用 https://open.feishu.cn/ ，不要创建任务'))
+    await tick()
+    await tick()
+    expect(gateway.shown).toHaveLength(1)
+    if (budget > text.length && !shrink) expect(bodies(gateway)).toEqual([text])
+    else {
+      expect(bodies(gateway)[0]).toContain('120')
+      expect(bodies(gateway)[0]).toContain('上限')
+      expect(bodies(gateway)[0]).not.toContain('```')
+    }
+    expect([...s.store.rows.keys()].filter((key) => key.startsWith('task/'))).toEqual([])
+    expect(sessions.byRole('worker')).toEqual([])
+    expect(svc.status()).toEqual({ running: true, problems: [] })
+    await s.shutdown()
+  })
+
+  it('keeps task admission working when the paired channel stops before judgement', async () => {
+    const gateway = fakeGateway()
+    const sessions = scripted()
+    const s = service({ sessions: sessions.port, gateway })
+    const svc = await s.started
+    expect(svc.submit({ kind: 'message', text: '修登录' }, 'offline-task')).toMatchObject({ ok: true })
+    gateway.setRunning(false)
+    await tick()
+    expect(sessions.byRole('worker')).toHaveLength(1)
+    expect(gateway.shown).toEqual([])
+    expect(svc.status().problems).toContainEqual({ kind: 'channel', text: STATUS.notRunning })
+    gateway.setRunning(true)
+    await tick()
+    expect(bodies(gateway).some((text) => text.includes('已新建 T-0001'))).toBe(true)
+    await s.shutdown()
+  })
+
+  it('keeps the desk and new tasks usable when a historical card cannot be edited', async () => {
+    const sessions = scripted()
+    const gateway = fakeGateway()
+    const s = service({ sessions: sessions.port, gateway })
+    const svc = await s.started
+    s.store.set('outbox/old-card', {
+      deliveryKey: 'old-card', at: new Date().toISOString(), text: 'Old choice', detail: null,
+      card: { options: [{ taskId: 'T-old', title: 'Old' }], allowNew: true }, chosen: 'T-old',
+      taskIds: ['T-old'], about: null, sentAt: new Date().toISOString(), messageId: 'unknown-old-message',
+    })
+    expect((await svc.desk() as any).running).toBe(true)
+    expect(s.store.get('outbox/old-card')).not.toHaveProperty('cardSettled')
+    expect(svc.submit({ kind: 'message', text: '登录页报错了，修一下' }, 'new-task')).toMatchObject({ ok: true })
+    await tick()
+    await tick()
+    expect(sessions.byRole('worker')).toHaveLength(1)
+    expect((await svc.desk() as any).running).toBe(true)
+    await s.shutdown()
+  })
+
   const OPTIONS = '请选择：\n1. 方案一，只改登录页\n2. 方案二，连同注册页\n3. 方案三，先不动'
   const longReply = `${'分析结论。'.repeat(170)}${OPTIONS}`
 

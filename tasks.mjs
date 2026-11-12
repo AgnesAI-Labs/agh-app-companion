@@ -32,7 +32,8 @@ import { namesOtherWorkspace } from './signals.mjs'
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
  * @typedef {{
  *   deliveryKey: string, at: string, text: string, detail: string | null, card: ChoiceCard | null, taskIds: string[],
- *   about: string | null, sentAt: string | null, messageId: string | null, ask?: AskMark | null,
+ *   about: string | null, sentAt: string | null, messageId: string | null, ask?: AskMark | null, cardSettled?: boolean,
+ *   replyDelivery?: 'unprepared' | 'prepared' | 'blocked',
  * }} OutboxEntry  text is written by code or the judge; detail carries worker output, shown to the owner
  *   only and never read back into the judge's recent conversation
  * @typedef {{ options: string[], at: string }} AskMark  the options of a worker question, and the `at` of that question on its task, so a click on a stale question can be told from a live one
@@ -48,14 +49,22 @@ export const TEXT = Object.freeze({
   storeWarn: '伴侣的存储用量已超过 80%，接近 95% 时会停止新建任务。',
   judgeDown: '判断模型连续不可用，你的消息还在排队，恢复后会处理。',
   busy: '会话正忙，这条先存着，空闲后送进去。',
-  approvalWaiting: '在等你审批，请到电脑上处理。',
+  approvalWaiting: '在等你审批，请查看审批卡片或网页会话。',
   asked: '等你回答',
-  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，需要看本地的提交历史、状态和差异时调用 git_read，不要自己跑 gh、curl、git log、git diff、git status 或读 .git。主人只看聊天，看不到网页界面：需要主人决定时，调用 ask_owner 工具，把问题和编号选项交给伴侣，然后结束本轮回复；主人的回答会作为下一条消息送来。',
+  worker: '只改工作区里的文件，不要运行 git commit 或 git push；需要提交、推送或开 PR 时调用 publish 工具；需要看 GitHub 上的 PR 或 CI 时调用 github_read，需要看本地的提交历史、状态和差异时调用 git_read，不要自己跑 gh、curl、git log、git diff、git status 或读 .git。需要主人决定时，优先调用 ask_user_question 提交单选、多选或文字问题并等待回答；也可调用 ask_owner 把问题和编号选项交给伴侣，然后结束本轮回复，主人的回答会作为下一条消息送来。同一个问题不要同时调用两种工具。',
   attach: '先判断这条和本任务有没有关系，无关就只回一行“退回：原因”，不要动手。',
   resume: '上一回合中断了，请从中断处继续。',
   continue: '主人让你继续。',
   continuePr: '主人让你继续：分支已推送但 PR 没开成。请再调用 publish 重试，它会复用已推送的分支。',
 })
+
+/** Safe user-facing explanations; never echo rejected model output or an arbitrary internal error. */
+export function answerRejection(reason, maxChars) {
+  if (reason === 'answer is too long') return `回复超过 ${maxChars} 字符上限，未发送正文。请缩短要求。`
+  if (reason === 'answer links outside the authorized sources') return '回复含有无法核实来源的链接，未发送正文。只能引用当前这条消息提供的安全网址或任务已有链接。'
+  if (reason === 'answer has control or format characters') return '回复含有控制或隐藏字符，未发送正文。请要求使用普通文字或 Markdown。'
+  return TEXT.fallback
+}
 
 const REASON_TEXT = {
   approvalExpired: '审批过期',
@@ -127,6 +136,7 @@ export function enqueueMessage(tx, { deliveryKey, text, detail, card, ask, taskI
   if (tx.store.get(key)) return
   /** @type {OutboxEntry} */
   const entry = { deliveryKey, at: tx.at, text, detail: detail ? clip(detail) : null, card: card ?? null, taskIds, about: about ?? null, sentAt: null, messageId: null, ...(ask ? { ask } : {}) }
+  if (deliveryKey.startsWith('answer:')) entry.replyDelivery = 'unprepared'
   tx.store.set(key, /** @type {any} */ (entry))
 }
 

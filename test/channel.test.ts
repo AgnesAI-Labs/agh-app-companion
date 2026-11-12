@@ -11,7 +11,7 @@ const inboxKey = (eventId: string) => `inbox/channel:im-1:${eventId}`
 async function setup(options: Parameters<typeof fakeGateway>[0] = {}) {
   const gw = fakeGateway(options)
   let channel: any
-  const h = harness({ channel: { deliver: (m) => channel.deliver(m) } })
+  const h = harness({ channel: { deliver: (m) => channel.deliver(m), replyBudget: () => channel.replyBudget(), prepareReply: (text) => channel.prepareReply(text), watchSession: (id) => channel.watchSession(id), refresh: () => channel.refresh() } })
   const opened = await openChannel({ gateway: gw.port, store: h.store, receive: (s: unknown) => h.engine.receive(s) })
   if (!opened.ok) throw new Error(opened.status)
   channel = opened.channel
@@ -122,6 +122,95 @@ describe('chat channel text rendering', () => {
     await channel.deliver({ ...plain('T-0001 修首页标题：完成', '改了 src/app.ts'), deliveryKey: 't1' })
     expect(gw.shown).toHaveLength(1)
     expect(gw.shown[0]).toMatchObject({ chatId: OWNER.chatId, deliveryKey: 't1', title: CHANNEL_TITLES.message, body: 'T-0001 修首页标题：完成\n\n改了 src/app.ts' })
+  })
+
+  it('delivers a long direct Markdown answer once, with no task or clipping', async () => {
+    const { h, gw, channel } = await setup({ textChars: 4000 })
+    const text = '# 展示\n\n' + '**Markdown 内容**\n\n'.repeat(35) + '```javascript\nconsole.log("done");\n```\n\n结束。'
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }))
+    const inbound = gw.message('直接展示 Markdown，不创建任务')
+    await channel.receive(inbound)
+    gw.setMode('lostResponse')
+    await h.tick()
+    await channel.receive(inbound)
+    await h.tick()
+    expect(gw.shown.map((message) => message.body)).toEqual([text])
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+  })
+
+  it('rejects a reply above the current channel budget without truncating its Markdown', async () => {
+    const { h, gw, channel } = await setup({ textChars: 120 })
+    const text = '```text\n' + '完整正文'.repeat(40) + '\n```'
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }))
+    await channel.receive(gw.message('直接回复'))
+    await h.tick()
+    expect(gw.shown[0]!.body).toContain('120')
+    expect(gw.shown[0]!.body).toContain('上限')
+    expect(gw.shown[0]!.body).not.toContain('完整正文')
+    expect(h.entry(inboxKey('ev-1')).disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining('too long')] })
+  })
+
+  it('persists the real budget-refusal reply before delivery and uses it as subsequent history', async () => {
+    const { h, gw } = await setup()
+    const text = '```text\n' + '正文'.repeat(100) + '\n```'
+    enqueueMessage({ store: h.store, at: h.now(), limits: LIMITS, workspaces: ['api', 'web'] }, { deliveryKey: 'answer:queued', text })
+    gw.rebind({ textChars: 100 })
+    await h.tick()
+    const actual = gw.shown[0]!.body
+    expect(actual).toContain('上限')
+    expect(actual).not.toContain('```')
+    expect(actual).not.toContain('正文正文')
+    expect(h.store.get('outbox/answer:queued')).toMatchObject({ text: actual, replyDelivery: 'prepared', messageId: gw.shown[0]!.messageId })
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '收到' }))
+    await h.say('刚才回复是什么？')
+    await h.tick()
+    expect(h.judgeInputs.at(-1)!.recent.find((item) => item.id === 'outbox/answer:queued').text).toBe(actual)
+  })
+
+  it('does not rewrite an uncertain submitted reply or block unrelated notices after a budget shrink', async () => {
+    const { h, gw } = await setup()
+    const text = '```text\n' + '完整正文'.repeat(100) + '\n```'
+    const tx = () => ({ store: h.store, at: h.now(), limits: LIMITS, workspaces: ['api', 'web'] })
+    enqueueMessage(tx(), { deliveryKey: 'answer:uncertain', text })
+    gw.setMode('down')
+    await h.tick()
+    expect(h.store.get('outbox/answer:uncertain')).toMatchObject({ text, replyDelivery: 'prepared', sentAt: null })
+    h.restart()
+    gw.rebind({ textChars: 120 })
+    gw.setMode('ok')
+    enqueueMessage(tx(), { deliveryKey: 'later-notice', text: '后续任务通知' })
+    await h.tick()
+    await h.tick()
+    await h.tick()
+    expect(gw.shown.some((message) => message.body === '后续任务通知')).toBe(true)
+    expect(gw.shown.filter((message) => message.body.includes('投递结果未确认'))).toHaveLength(1)
+    expect(gw.inputs.filter((input) => input.deliveryKey === 'answer:uncertain').every((input) => input.text === text)).toBe(true)
+    expect(gw.ledger.get('answer:uncertain')).toEqual({ state: 'unknown' })
+    expect(h.store.get('outbox/answer:uncertain')).toMatchObject({ text, replyDelivery: 'blocked', sentAt: null, messageId: null })
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '收到' }))
+    await h.say('继续处理')
+    await h.tick()
+    expect(h.judgeInputs.at(-1)!.recent.some((item) => item.text === text)).toBe(false)
+  })
+
+  it('uses the latest verified budget rather than the startup budget when the channel goes offline', async () => {
+    const { h, gw, channel } = await setup({ textChars: 120 })
+    const text = '**完整回复**\n\n' + '可稍后发送的内容。'.repeat(40)
+    gw.rebind({ textChars: 4000 })
+    h.setJudge(({ batch }) => {
+      gw.setRunning(false)
+      return decisions({ kind: 'answer', message: batch[0]!.id, text })
+    })
+    const input = gw.message('直接回复，不建任务')
+    await channel.receive(input)
+    await h.tick()
+    expect(h.entry(inboxKey(input.eventId)).disposition.kind).toBe('answered')
+    expect(gw.shown).toEqual([])
+    gw.setRunning(true)
+    await h.tick()
+    expect(gw.shown.map((message) => message.body)).toEqual([text])
+    expect(h.tasks()).toEqual([])
   })
 
   it('sends a choice card as one button per task and one for a new task, with no list in the text', async () => {
@@ -386,6 +475,48 @@ describe('chat channel buttons', () => {
     const sent = gw.shown.find((m) => m.deliveryKey.startsWith('ask:'))!
     return { id, sid, sent }
   }
+
+  it('renews child watches after restart and settles Web answers with retry', async () => {
+    const ctx = await setup()
+    const { id, sid, sent } = await question(ctx)
+    expect(ctx.gw.watches).toContain(sid)
+    ctx.h.restart()
+    await ctx.h.tick()
+    expect(ctx.gw.watches.filter((value) => value === sid).length).toBeGreaterThan(1)
+    ctx.h.say('Use A', { source: 'web', replyTo: id })
+    ctx.gw.setMode('down')
+    await expect(ctx.h.tick()).resolves.toBeUndefined()
+    expect(ctx.h.store.get(`outbox/${sent.deliveryKey}`)?.cardSettled).not.toBe(true)
+    expect(ctx.h.task(id).question).toBeNull()
+    expect(ctx.gw.edits).toEqual([])
+    ctx.gw.setMode('ok')
+    ctx.h.restart()
+    await ctx.h.tick()
+    expect(ctx.gw.edits).toEqual([expect.objectContaining({ messageId: sent.messageId, title: '伴侣：已处理' })])
+    await ctx.h.tick()
+    expect(ctx.gw.edits).toHaveLength(1)
+    expect(await ctx.channel.receive(ctx.gw.click(sent.messageId, 'answer:1'))).toMatchObject({ kind: 'dropped' })
+  })
+
+  it('does not suppress a pairing refusal during a card update', async () => {
+    const ctx = await setup()
+    const { id, sent } = await question(ctx)
+    ctx.h.say('Use A', { source: 'web', replyTo: id })
+    ctx.gw.channels.update = async () => { throw Object.assign(new Error('pairing changed'), { code: 'NOT_PAIRED' }) }
+    await expect(ctx.h.tick()).rejects.toMatchObject({ code: 'NOT_PAIRED' })
+    expect(ctx.h.store.get(`outbox/${sent.deliveryKey}`)?.cardSettled).not.toBe(true)
+  })
+
+  it('continues with other cards when an older message cannot be edited', async () => {
+    const ctx = await setup()
+    const { id, sent } = await question(ctx)
+    const old = ctx.h.store.get(`outbox/${sent.deliveryKey}`)
+    ctx.h.store.set('outbox/0-expired', { ...old, deliveryKey: '0-expired', messageId: 'unknown-old-message' })
+    ctx.h.say('Use A', { source: 'web', replyTo: id })
+    await expect(ctx.h.tick()).resolves.toBeUndefined()
+    expect(ctx.gw.edits).toEqual([expect.objectContaining({ messageId: sent.messageId })])
+    expect(ctx.h.store.get('outbox/0-expired')?.cardSettled).not.toBe(true)
+  })
 
   it('sends a worker question with one button per option and no numbered list', async () => {
     const ctx = await setup()

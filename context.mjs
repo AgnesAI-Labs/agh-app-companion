@@ -62,7 +62,7 @@ export function recentConversation(tx, batch) {
   const companion = tx.store
     .scan('outbox/')
     .map((row) => row.value)
-    .filter((m) => Date.parse(m.at) >= since)
+    .filter((m) => m.replyDelivery !== 'blocked' && Date.parse(m.at) >= since)
     .map((m) => ({
       id: `outbox/${m.deliveryKey}`,
       at: m.at,
