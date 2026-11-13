@@ -116,6 +116,11 @@ export function harness(options: { judge?: Judge; worker?: Worker; limits?: Part
     now: () => new Date(clock).toISOString(),
     signal(fields: Record<string, unknown>) {
       const eventId = (fields.eventId as string) ?? `e${++eventSeq}`
+      if (fields.kind === 'message' && typeof fields.text === 'string' && fields.origin !== 'material') {
+        const receiptId = typeof fields.receiptId === 'string' ? fields.receiptId : `receipt:${eventId}`
+        sessions.receive(receiptId, fields.text)
+        fields = { ...fields, receiptId }
+      }
       return current.receive({ source: 'im', eventId, at: new Date(clock).toISOString(), origin: 'owner', ...fields })
     },
     say(text: string, fields: Record<string, unknown> = {}) {

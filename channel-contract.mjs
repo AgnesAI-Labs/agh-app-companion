@@ -5,11 +5,9 @@
  * channel page, and every message in either direction goes through the platform.
  *
  * What the companion assumes, to check against the platform when it changes:
- *   A1  Inbound is at-most-once with bounded retry. The platform hands each owner message to the
- *       `onEvent` handler, retries a few times if the handler throws or the service is not running,
- *       then tells the owner the message was not received and drops it. No durable inbound queue
- *       exists, so `receive` returns a final result and throws only when it could not record the
- *       event. Events carry the platform's own `eventId`, stable across a retry.
+ *   A1  The Host persists paired message identity, original payload and a receipt before acknowledging
+ *       delivery to the service. Redelivery uses the same receipt. Missing historical observations
+ *       stay unknown. This does not promise receipt of events that never reached the Host.
  *   A2  Identity: `sender.userId` and `chat.id` come from the platform's pairing record, never from
  *       a display name. The companion still compares them with the pairing it opened on.
  *   A3  Owner: the service has at most one pairing (one private chat). `pairing()` reports it with
@@ -55,7 +53,7 @@
  * @typedef {{ id: string, label: string, style?: 'primary' | 'default' | 'danger' }} ChannelAction
  * @typedef {{
  *   kind: 'message', origin: 'owner', pairingId: string, instanceId: string, eventId: string,
- *   messageId: string, at: string, chat: ChatRef, sender: Sender, text: string, quotedMessageId?: string,
+ *   messageId: string, at: string, chat: ChatRef, sender: Sender, text: string, quotedMessageId?: string, receiptId?: string,
  * } | {
  *   kind: 'action', origin: 'owner', pairingId: string, instanceId: string, eventId: string,
  *   messageId: string, at: string, chat: ChatRef, sender: Sender, actionId: string,
@@ -94,9 +92,11 @@ export function parseChannelEvent(raw) {
   if (!isObject(v.chat) || !text(v.chat.id, 256) || v.chat.type !== 'dm') return { ok: false, error: 'chat is not a private chat' }
   if (!isObject(v.sender) || !text(v.sender.userId, 256)) return { ok: false, error: 'sender has no verified id' }
   if (!text(v.messageId, 256)) return { ok: false, error: 'messageId is invalid' }
+  if (v.receiptId !== undefined && !text(v.receiptId, 256)) return { ok: false, error: 'receiptId is invalid' }
   const common = {
     origin: /** @type {const} */ ('owner'), pairingId: v.pairingId, instanceId: typeof v.instanceId === 'string' ? v.instanceId : '',
     eventId: v.eventId, messageId: v.messageId, at: v.at, chat: { id: v.chat.id, type: /** @type {const} */ ('dm') }, sender: { userId: v.sender.userId },
+    ...(v.receiptId ? { receiptId: v.receiptId } : {}),
   }
   if (v.kind === 'action') {
     if (!text(v.actionId, 64)) return { ok: false, error: 'actionId is invalid' }

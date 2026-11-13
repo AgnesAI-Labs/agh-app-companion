@@ -598,6 +598,19 @@ export function Desk({ services, openSettings }) {
       h('div', { className: 'cp-cols' },
         h('div', { className: 'cp-main' },
           problems.map((p, i) => h(Status, { key: `${p.kind}-${i}`, problem: p, openSettings })),
+          list(data.ownerInputs).length ? h('section', { className: 'cp-sec', 'aria-labelledby': 'cp-owner-inputs', 'data-testid': 'owner-inputs' },
+            h('h2', { id: 'cp-owner-inputs' }, `保留的主人消息（${data.ownerInputsTotal ?? data.ownerInputs.length}）`),
+            h('p', { className: 'cp-hint' }, '以下原话尚无可确认的最终处置。未知送达不等于未执行。当前显示前 20 条，处置后显示后续；Host 认证处置不会由伴侣按钮代办。'),
+            list(data.ownerInputs).map((input) => {
+              const session = sessionHref({ sessionId: input.sessionId })
+              const href = session && input.inputId ? `${session}&ownerInput=${encodeURIComponent(input.inputId)}` : null
+              return h('details', { key: input.key, className: 'cp-panel' },
+                h('summary', null, `${input.taskId} · ${input.state}`),
+                h('p', null, input.reason),
+                h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, input.text),
+                href ? h('a', { className: 'cp-btn', href }, '在 Host 中查看原话与决定并处理')
+                  : h('p', { className: 'cp-hint' }, '历史目标或结果未知。原文继续保留，不会自动转投当前会话。'))
+            })) : null,
           !blocked && backoff && backoff.failures >= 3
             ? h('div', { className: 'cp-banner cp-warn', role: 'status', 'data-testid': 'status-judge' }, h(Icon, { name: 'alert' }), h('h3', null, `判断模型连续 ${backoff.failures} 次不可用，你的消息还在排队`), h('p', null, `${clock(backoff.until)} 再试。停止、继续、回复某个任务不经判断模型，照常生效。`))
             : null,

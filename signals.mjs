@@ -4,7 +4,7 @@
  * from text.
  *
  * @typedef {'owner' | 'material' | 'stranger'} Origin  material = content that is not the owner's words
- * @typedef {{ source: string, eventId: string, at: string, origin: Origin, hops?: number }} SignalBase
+ * @typedef {{ source: string, eventId: string, at: string, origin: Origin, hops?: number, receiptId?: string, authority?: any }} SignalBase
  * @typedef {SignalBase & { kind: 'message', text: string, replyTo?: string, candidates?: string[] }} MessageSignal
  *   replyTo = the task whose message the owner replied to, as the channel matched it; candidates = the
  *   tasks of a message about several tasks the owner replied to, the only ones the judge may pick
@@ -44,6 +44,7 @@ export function parseSignal(value) {
   const hops = /** @type {Record<string, unknown>} */ (value).hops
   if (hops !== undefined && !(Number.isSafeInteger(hops) && /** @type {number} */ (hops) >= 0)) return { ok: false, error: 'hops is invalid' }
   const v = /** @type {Record<string, unknown>} */ (value)
+  if (v.receiptId !== undefined && (!text(v.receiptId, 256) || !v.receiptId)) return { ok: false, error: 'receiptId is invalid' }
   const ok = kind === 'message'
     ? text(v.text) && (v.replyTo === undefined || text(v.replyTo, 64)) && (v.candidates === undefined || taskList(v.candidates))
     : kind === 'button'

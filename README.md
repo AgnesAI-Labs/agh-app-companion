@@ -126,6 +126,15 @@ message in the batch, reference material and old conversation do not authorize l
 still cannot contain links. URLs are never fetched by this check. Unsafe characters or unverified
 links produce a specific refusal without echoing the rejected output.
 
+When a judge-written title or answer contains an ambiguous bare address, the companion may spell its
+punctuation instead of refusing the whole decision. For example, `安排.md` appears as `安排〔点号〕md`.
+The spelling is not the original filename and cannot be copied as a path. It does not prove a file
+exists or authorize a URL. The worker still receives the owner's original request as its brief.
+Spelling can remove Markdown formatting. Unsafe or ambiguous complete URLs and schemes remain refused.
+When bare-address spelling is needed, text containing `@` outside authorized URLs is refused
+conservatively rather than interpreting a possible credential-bearing address.
+The actual chat client's link detection for this spelling has not been verified.
+
 Markdown is passed to the channel, not rendered by the judge. Client support for individual Markdown
 features is separate from acceptance and delivery.
 

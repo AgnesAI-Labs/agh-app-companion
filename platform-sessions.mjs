@@ -138,6 +138,8 @@ export function platformSessions(platform) {
   return Object.freeze({
     start: guarded((request) => platform.start(request)),
     send: guarded((sessionId, input) => platform.send(sessionId, input)),
+    admitInput: guarded((sessionId, input) => platform.admitInput(sessionId, input)),
+    inputResult: guarded((sessionId, input) => platform.inputResult(sessionId, input)),
     list: guarded(() => platform.list()),
     status: guarded((sessionId) => platform.status(sessionId)),
     events: guarded((sessionId, options) => platform.events(sessionId, options)),

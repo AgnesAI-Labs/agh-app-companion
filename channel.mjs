@@ -15,7 +15,7 @@ import { answerRejection, isAsking } from './tasks.mjs'
  * @typedef {import('./channel-contract.mjs').Pairing} Pairing
  * @typedef {import('./tasks.mjs').OutboxEntry} OutboxEntry
  * @typedef {{ kind: 'accepted' | 'duplicate', key: string } | { kind: 'dropped', reason: string } | { kind: 'invalid', error: string }} ReceiveResult
- *   every result is final: the platform does not redeliver an event once `receive` returns
+ *   accepted/duplicate confirms durable ingress; the service throws for an unconfirmed Host receipt
  * @typedef {import('./effects.mjs').Channel & {
  *   replyBudget(): Promise<number>,
  *   prepareReply(text: string): Promise<string>,
@@ -209,6 +209,9 @@ export async function openChannel({ gateway, store, receive }) {
       const signal = event.kind === 'action' ? clickSignal(event) : {
         source: `channel:${bound.instanceId}`, eventId: event.eventId, at: event.at, origin: 'owner',
         kind: 'message', text: event.text, ...quoted(event, outboxByMessage),
+        ...(event.receiptId ? { receiptId: event.receiptId } : {}),
+        authority: { pairingId: event.pairingId, instanceId: event.instanceId, userId: event.sender.userId,
+          chatId: event.chat.id, messageId: event.messageId, quotedMessageId: event.quotedMessageId ?? null },
       }
       if (typeof signal === 'string') return { kind: 'dropped', reason: signal }
       const result = await receive(signal)
