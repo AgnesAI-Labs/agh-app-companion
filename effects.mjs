@@ -3,6 +3,7 @@ import { SessionRefusal, START_ATTEMPTS } from './platform-sessions.mjs'
 import { startRequest } from './sessions.mjs'
 import { ChannelRefusal } from './channel-targets.mjs'
 import { enqueueMessage, getTask, hash, parkRefused, TEXT, transit } from './tasks.mjs'
+import { migrateOwnerSend, runOwnerInput } from './owner-inputs.mjs'
 
 /**
  * Runs committed effects. Each carries its idempotency key (start: `taskId:generation`, send:
@@ -22,7 +23,11 @@ import { enqueueMessage, getTask, hash, parkRefused, TEXT, transit } from './tas
 export async function runSessionOps(deps) {
   const blocked = new Set()
   for (const { key, value: op } of deps.tx().store.scan('op/')) {
-    // A new-generation start must not wait behind the sends it unblocks.
+    if (op.kind === 'send' || op.kind === 'ownerInput') {
+      const input = op.kind === 'send' ? await migrateOwnerSend(deps, key, op) : op
+      await runOwnerInput(deps, key, input)
+      continue
+    }
     if (blocked.has(op.taskId) && op.kind !== 'start') continue
     const tx = deps.tx()
     const task = tx.store.getTask(op.taskId)
@@ -42,12 +47,6 @@ export async function runSessionOps(deps) {
       drop()
       continue
     }
-    if (op.kind === 'send' && op.inbox && (task.state === 'done' || task.state === 'failed'))
-      tx.store.transaction(() => {
-        // The session finished before this message reached it, so the message reopens the task.
-        if (task.attach?.inbox === op.inbox) tx.store.putTask({ ...task, attach: { ...task.attach, prior: { state: task.state, reason: task.reason } } })
-        transit(tx, task.id, 'ownerMessage')
-      })
     const current = getTask(deps.tx(), op.taskId)
     if (!SLOT_STATES.includes(current.state)) {
       blocked.add(op.taskId)
@@ -66,7 +65,7 @@ export async function runSessionOps(deps) {
       let sessionId
       try {
         ;({ sessionId } = await deps.sessions.start(
-          startRequest('worker', { workspace, input: op.input, startKey: `${op.taskId}:${op.generation}` }),
+          startRequest('worker', { workspace, input: op.input, startKey: `${op.taskId}:${op.generation}`, taskBinding: { id: op.taskId, generation: op.generation } }),
         ))
       } catch (error) {
         blocked.add(op.taskId)
@@ -84,37 +83,11 @@ export async function runSessionOps(deps) {
       const done = deps.tx()
       done.store.transaction(() => {
         done.store.putTask({ ...getTask(done, op.taskId), sessionId, cursor: 0, reading: { tokens: null, cost: null } })
+        done.store.set(`session-binding/${op.taskId}:${op.generation}`, { sessionId, startKey: `${op.taskId}:${op.generation}`, generation: op.generation })
         done.store.delete(key)
       })
       continue
     }
-    if (!current.sessionId) {
-      blocked.add(op.taskId)
-      continue
-    }
-    let result
-    try {
-      result = await deps.sessions.send(current.sessionId, { text: op.input, idempotencyKey: op.key })
-    } catch (error) {
-      blocked.add(op.taskId)
-      // The owner's message stays queued and goes in once the owner continues the task.
-      if (error instanceof SessionRefusal && !error.retryable) park(deps, op.taskId, error, deps.workspacePath(current.workspace) ?? current.workspace, null)
-      continue
-    }
-    const after = deps.tx()
-    after.store.transaction(() => {
-      if (result.state === 'started' || result.reason === 'duplicateKey') {
-        const sent = getTask(after, op.taskId)
-        if (sent.attach && sent.attach.inbox === op.inbox) after.store.putTask({ ...sent, attach: { ...sent.attach, sent: true } })
-        return after.store.delete(key)
-      }
-      blocked.add(op.taskId)
-      if (result.reason === 'archived') return transit(after, op.taskId, 'sessionLost')
-      if (op.inbox && !op.busyNoticed) {
-        enqueueMessage(after, { deliveryKey: `busy:${op.key}`, text: TEXT.busy, taskIds: [op.taskId], about: op.inbox })
-        after.store.set(key, { ...op, busyNoticed: true })
-      }
-    })
   }
 }
 

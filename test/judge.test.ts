@@ -147,6 +147,42 @@ describe('judge batches replayed from fixed model outputs', () => {
     expect(h.channel.texts()).toContain('已新建 T-0001（web）首页标题：进行中')
   })
 
+  it('creates a task with a spelled title and the original owner brief', async () => {
+    const brief = '麻烦看看 web 里行前文件夹的安排.md，把集合地点和时间写成行前便笺。'
+    const h = harness({
+      judge: ({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'web', title: '从安排.md整理集合地点与行前便笺' }),
+    })
+    await h.say(brief)
+    await h.tick()
+    expect(h.tasks()).toEqual([expect.objectContaining({ workspace: 'web', title: '从安排〔点号〕md整理集合地点与行前便笺', brief, state: 'running' })])
+    expect(h.workers()[0]!.request).toMatchObject({ workspace: '/w/web', startKey: 'T-0001:0' })
+    expect(h.workers()[0]!.inputs[0]).toContain(`主人原话（只按这一段做事）：\n${brief}`)
+    expect(h.entry('inbox/im:e1').disposition).toMatchObject({ kind: 'created', taskIds: ['T-0001'] })
+  })
+
+  it('keeps task context bound after a spelled title', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'web', title: '处理安排.md' }) })
+    await h.say('处理安排.md')
+    await h.tick()
+    h.setJudge(({ batch }) => decisions({ kind: 'append', message: batch[0]!.id, taskId: 'T-0001', context: 'inbox/im:e1' }))
+    await h.say('再补充时间')
+    await h.tick()
+    expect(h.entry('inbox/im:e2').disposition).toMatchObject({ kind: 'appended', taskIds: ['T-0001'] })
+  })
+
+  it('does not bind an answered filename question to an existing task', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '请提供安排.md的位置' }))
+    await h.say('集合时间是什么')
+    await h.tick()
+    h.setJudge(({ batch }) => decisions({ kind: 'append', message: batch[0]!.id, taskId: id, context: 'inbox/im:e2' }))
+    await h.say('资料在 web')
+    await h.tick()
+    expect(h.entry('inbox/im:e2').disposition).toMatchObject({ kind: 'answered', taskIds: [] })
+    expect(h.entry('inbox/im:e3').disposition).toMatchObject({ kind: 'fallback', taskIds: [] })
+  })
+
   it('opens the judge on the dedicated workspace as an ephemeral read-only session', async () => {
     const h = harness()
     await h.say('你好')
@@ -232,6 +268,112 @@ describe('judge batches replayed from fixed model outputs', () => {
 })
 
 describe('answers and conversation context (spec §4.19 tests)', () => {
+  it('spells ambiguous names in an answer without creating a task', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '请告诉我备忘.md或清单.md的位置。' }) })
+    await h.say('集合时间是什么')
+    await h.tick()
+    expect(h.channel.texts()).toEqual(['请告诉我备忘〔点号〕md或清单〔点号〕md的位置〔点号〕'])
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+    expect(h.entry('inbox/im:e1').disposition).toMatchObject({ kind: 'answered', taskIds: [] })
+  })
+
+  it('keeps the current owner URL exact when spelling a bare name', async () => {
+    const url = 'https://example.org/a?q=1'
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: `见 ${url} 和安排.md` }) })
+    await h.say(`请引用 ${url}`)
+    await h.tick()
+    expect(h.channel.texts()).toEqual([`见  ${url}  和安排〔点号〕md`])
+  })
+
+  it('keeps a snapshot URL exact when spelling a bare name', async () => {
+    const h = harness()
+    const id = await h.create('修登录')
+    h.store.putTask({ ...h.task(id), prUrl: 'https://git.example/pr/7' })
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '安排.md https://git.example/pr/7' }))
+    await h.say('PR 在哪')
+    await h.tick()
+    expect(h.channel.texts()).toContain('安排〔点号〕md  https://git.example/pr/7 ')
+  })
+
+  it.each([
+    ['unauthorized URL', '安排.md https://evil.example/x'],
+    ['credentials', '安排.md https://u:p@example.org/x'],
+    ['bare credentials', 'user@evil.example'],
+    ['folded bare credentials', 'user＠evil。example'],
+    ['at sign mixed with bare name', '@提醒 安排.md'],
+    ['custom scheme', '安排.md custom:https://example.org/doc'],
+    ['folded scheme', '安排.md ｊａｖａｓｃｒｉｐｔ：alert(1)'],
+    ['encoded outer scheme', '安排.md [文档](ms&#45;excel:ofe|u|https://example.org/doc)'],
+    ['combining mark', '安排.md e\u0301'],
+    ['IPv6', '安排.md [::1]'],
+    ['hidden character', '安排.md\u200b'],
+  ])('does not recover an answer containing %s', async (_name, text) => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
+    await h.say('请引用 https://example.org/doc')
+    await h.tick()
+    expect(h.channel.texts()).toEqual([text.includes('\u200b')
+      ? '回复含有控制或隐藏字符，未发送正文。请要求使用普通文字或 Markdown。'
+      : '回复含有无法核实来源的链接，未发送正文。只能引用当前这条消息提供的安全网址或任务已有链接。'])
+    expect(h.entry('inbox/im:e1').disposition.kind).toBe('fallback')
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+  })
+
+  it.each(['user@evil.example', 'user＠evil。example', '@提醒 安排.md'])('rejects a title with ambiguous credentials: %s', async (title) => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'web', title }) })
+    await h.say('处理文件')
+    await h.tick()
+    expect(h.channel.texts()).toEqual([TEXT.fallback])
+    expect(h.entry('inbox/im:e1').disposition.kind).toBe('fallback')
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+  })
+
+  it('keeps ordinary text containing an at sign when no bare address needs recovery', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '请 @小王 看一下' }) })
+    await h.say('请说明')
+    await h.tick()
+    expect(h.channel.texts()).toEqual(['请 @小王 看一下'])
+  })
+
+  it('spells Markdown delimiters and a bare host without granting a destination', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '[文件](attacker.md)' }) })
+    await h.say('文件在哪里')
+    await h.tick()
+    expect(h.channel.texts()).toEqual(['〔字符005B〕文件〔字符005D〕〔字符0028〕attacker〔点号〕md〔字符0029〕'])
+  })
+
+  it.each([
+    ['fullwidth point', '安排．md', '安排〔点号〕md'],
+    ['ideographic point', '安排。md', '安排〔点号〕md'],
+    ['IPv4', '192.168.1.1', '192〔点号〕168〔点号〕1〔点号〕1'],
+    ['nested path', '目录/安排.md', '目录〔字符002F〕安排〔点号〕md'],
+  ])('spells %s after the raw guard rejects it', async (_name, text, expected) => {
+    expect(onlySnapshotLinks(text, new Set())).toBe(false)
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text }) })
+    await h.say('请说明')
+    await h.tick()
+    expect(h.channel.texts()).toEqual([expected])
+  })
+
+  it('rejects an answer when spelling exceeds its UTF-16 limit', async () => {
+    const h = harness({ limits: { answerMaxChars: 7 }, judge: ({ batch }) => decisions({ kind: 'answer', message: batch[0]!.id, text: '安排.md' }) })
+    await h.say('请说明')
+    await h.tick()
+    expect(h.entry('inbox/im:e1').disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining('is too long')] })
+    expect(h.channel.texts()).not.toContain('安排〔点号〕md')
+  })
+
+  it('rejects a title when spelling would exceed the title limit', async () => {
+    const h = harness({ judge: ({ batch }) => decisions({ kind: 'create', messages: [batch[0]!.id], workspace: 'web', title: `${'长'.repeat(115)}a.md` }) })
+    await h.say('处理文件')
+    await h.tick()
+    expect(h.tasks()).toEqual([])
+    expect(h.workers()).toEqual([])
+    expect(h.channel.texts()).toEqual([TEXT.fallback])
+  })
+
   it('drops an answer citing a message outside the batch or not from the owner, and sends the fixed text', async () => {
     const h = harness({ judge: () => decisions({ kind: 'answer', message: 'inbox/im:other', text: '答非所问' }) })
     await h.say('我有几个仓')
@@ -365,13 +507,13 @@ describe('answers and conversation context (spec §4.19 tests)', () => {
     const h = harness({ judge: ({ batch }) => decisions(...batch.filter((item) => item.origin === 'owner').map((item) => ({ kind: 'answer', message: item.id, text: '收到' }))) })
     await h.say(`记录 ${url}`)
     await h.tick()
-    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch.find((item) => item.text === '直接回复')!.id, text: `参考 ${url}` }))
+    h.setJudge(({ batch }) => decisions({ kind: 'answer', message: batch.find((item) => item.text === '直接回复')!.id, text: `安排.md 参考 ${url}` }))
     await h.say('直接回复')
     await h.say(`另一条消息 ${url}`)
     await h.signal({ kind: 'message', origin: 'material', text: url })
     await h.tick()
     expect(h.entry('inbox/im:e2').disposition).toMatchObject({ kind: 'fallback', notes: [expect.stringContaining('links outside')] })
-    expect(h.channel.texts()).not.toContain(`参考 ${url}`)
+    expect(h.channel.texts()).not.toContain(`安排.md 参考 ${url}`)
   })
 
   it('delivers an answer that names files and versions', async () => {

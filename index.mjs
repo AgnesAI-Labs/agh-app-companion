@@ -268,9 +268,11 @@ export async function startEngine(
     return channel.receive(raw)
   }
   if (gateway) {
-    // The platform retries a handler that throws, so a handler that returns means the event is settled (A1).
+    // A Host receipt stays pending until the engine confirms its durable inbound state.
     gateway.onEvent(async (event) => {
-      await receive(event)
+      const result = await receive(event)
+      if (event?.receiptId && result.kind !== 'accepted' && result.kind !== 'duplicate')
+        throw new Error('COMPANION_RECEIPT_UNCONFIRMED')
     })
     gateway.onPairingChange(() => {
       void openIfNone().then(() => channel?.refresh())

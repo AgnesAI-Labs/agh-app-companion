@@ -11,8 +11,9 @@ export function housekeeping(tx) {
   const now = Date.parse(tx.at)
   const old = (at, ttl) => at !== null && now - Date.parse(at) > ttl
   tx.store.transaction(() => {
+    const pinned = new Set(tx.store.scan('op/').filter(({ value }) => value.kind === 'ownerInput' || value.kind === 'send').map(({ value }) => value.inbox).filter(Boolean))
     for (const { key, value } of tx.store.scan('inbox/'))
-      if (value.disposition && old(value.disposedAt, tx.limits.inboxTtlMs)) tx.store.delete(key)
+      if (!pinned.has(key) && value.disposition && old(value.disposedAt, tx.limits.inboxTtlMs)) tx.store.delete(key)
     for (const { key, value } of tx.store.scan('outbox/'))
       if (old(value.sentAt, tx.limits.outboxTtlMs)) tx.store.delete(key)
     for (const task of allTasks(tx)) {

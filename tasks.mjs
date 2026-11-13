@@ -27,6 +27,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  * @typedef {{ seq: number, taskId: string } & (
  *   { kind: 'start', generation: number, input: string, failures?: number }
  *   | { kind: 'send', input: string, key: string, inbox: string | null, busyNoticed: boolean }
+ *   | { kind: 'ownerInput', input: string, originalText: string, key: string, inbox: string | null, source: any, target: any, request: any, host: any, revision: number, legacy: boolean }
  *   | { kind: 'interrupt' })} SessionOp
  * @typedef {{ text: string, options: string[], at: string, generation: number }} Question  what the worker asked through ask_owner; kept until the owner answers or the task leaves waiting
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
@@ -130,6 +131,22 @@ function enqueueOp(tx, op) {
   tx.store.set(`op/${String(seq).padStart(9, '0')}`, { seq, ...op })
 }
 
+/** Creates only a fixed-generation Host admission obligation, never a generic worker send. */
+function enqueueOwnerInput(tx, task, { key, text, inbox = null, signal = null, recoveryEndSeq = null }) {
+  const target = { sessionId: task.sessionId, taskId: task.id, taskGeneration: task.generation, startKey: `${task.id}:${task.generation}` }
+  const input = signal?.receiptId
+    ? { kind: 'ownerMessage', receiptId: signal.receiptId }
+    : recoveryEndSeq
+      ? { kind: 'recoveryContinuation', turnEndSeq: recoveryEndSeq }
+      : { kind: 'legacyOwnerMessage', text, originalInbox: inbox }
+  enqueueOp(tx, {
+    taskId: task.id, kind: 'ownerInput', key, input: text, originalText: text, inbox,
+    source: signal ? structuredClone(signal) : null, target,
+    request: { key, target: { taskId: task.id, taskGeneration: task.generation, startKey: target.startKey }, input },
+    host: null, revision: 1, legacy: false,
+  })
+}
+
 /** Records an outbound message once per delivery key. @param {Tx} tx @param {{ deliveryKey: string, text: string, detail?: string, card?: ChoiceCard, ask?: AskMark, taskIds?: string[], about?: string }} message */
 export function enqueueMessage(tx, { deliveryKey, text, detail, card, ask, taskIds = [], about }) {
   const key = `outbox/${deliveryKey}`
@@ -184,8 +201,8 @@ export function transit(tx, taskId, event, detail = {}) {
   switch (row.effect) {
     case 'resume':
       task.resumed += 1
-      enqueueOp(tx, { taskId, kind: 'send', input: TEXT.resume, key: `${taskId}:g${task.generation}:resume`, inbox: null, busyNoticed: false })
-      enqueueMessage(tx, { deliveryKey: `task:${taskId}:g${task.generation}:resume`, text: `${label(task)}：回合中断，已自动续跑一次`, taskIds: [taskId] })
+      enqueueOwnerInput(tx, task, { text: TEXT.resume, key: `${taskId}:g${task.generation}:resume`, recoveryEndSeq: task.lastTurnEndSeq ?? null })
+      enqueueMessage(tx, { deliveryKey: `task:${taskId}:g${task.generation}:resume`, text: `${label(task)}：回合中断，恢复请求已保留，交由 Host 核查输入资格`, taskIds: [taskId] })
       break
     case 'continue':
       task.refusals = 0
@@ -219,8 +236,11 @@ export function transit(tx, taskId, event, detail = {}) {
   if (to !== 'waiting' && task.question) task.question = null
   task.endedAt = ENDED.has(to) ? (from === to ? task.endedAt : tx.at) : null
   const seq = record(tx, task, 'state', { event, from, to, reason, ...(detail.note ? { note: detail.note } : {}) })
-  if (row.effect === 'continue' && !lost)
-    enqueueOp(tx, { taskId, kind: 'send', input: failedPr ? TEXT.continuePr : TEXT.continue, key: `${taskId}:${seq}`, inbox: null, busyNoticed: false })
+  if (row.effect === 'continue' && !lost) {
+    const entry = detail.about ? tx.store.get(detail.about) : undefined
+    enqueueOwnerInput(tx, task, { text: entry?.signal?.text ?? (failedPr ? TEXT.continuePr : TEXT.continue),
+      key: `${taskId}:${seq}`, inbox: detail.about ?? null, signal: entry?.signal ?? null })
+  }
   if (from !== to && NOTIFY.has(to) && !detail.quiet)
     enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.message ?? detail.note ? { detail: detail.message ?? detail.note } : {}), taskIds: [taskId] })
   if (SLOT_STATES.includes(from) && !SLOT_STATES.includes(to)) admit(tx, task.workspace)
@@ -331,12 +351,7 @@ export function forward(tx, taskId, entry, { unquoted, picked }) {
     fresh.attach = { inbox: entry.key, prior, picked, sent: false }
     tx.store.putTask(fresh)
   }
-  enqueueOp(tx, {
-    taskId, kind: 'send', input: unquoted ? `${TEXT.attach}\n\n${body}` : body,
-    key: `${taskId}:${seq}`, inbox: entry.key, busyNoticed: false,
-  })
-  // A waiting task moves on when its session reports the wait is over (reconcile), not here.
-  if (prior.state === 'done' || prior.state === 'failed') transit(tx, taskId, 'ownerMessage')
+  enqueueOwnerInput(tx, fresh, { text: body, key: `${taskId}:${seq}`, inbox: entry.key, signal: entry.signal })
   const now = getTask(tx, taskId)
   if (unquoted || picked) {
     const held = now.state === 'running' || now.state === 'waiting' ? '' : `，${stateText(now)}，可以继续时再送进去`

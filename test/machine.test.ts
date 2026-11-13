@@ -154,7 +154,7 @@ describe('state table (spec §4.3), one test per row', () => {
     h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
     await h.tick()
     h.sessions.set(sid, { kind: 'idle', flags: [] })
-    await h.sessions.port.send(sid, { text: 'Answer', idempotencyKey: 'answer' })
+    h.sessions.nativeResult(sid, 'Answer')
     await h.tick()
     expect(h.task(id).state).toBe('running')
     h.sessions.finish(sid, 'completed', 'Finished after answer')
@@ -169,7 +169,7 @@ describe('state table (spec §4.3), one test per row', () => {
     h.sessions.set(sid, { kind: 'active', flags: ['waitingOnUserInput'] })
     await h.tick()
     h.sessions.set(sid, { kind: 'idle', flags: [] })
-    await h.sessions.port.send(sid, { text: 'Answer', idempotencyKey: 'answer' })
+    h.sessions.nativeResult(sid, 'Answer')
     h.sessions.finish(sid, outcome, 'Continuation did not complete')
     await h.tick()
     expect(h.task(id).state).toBe(outcome === 'failed' ? 'failed' : 'running')
@@ -233,7 +233,9 @@ describe('state table (spec §4.3), one test per row', () => {
       await button(h, 'continue', id)
       await h.tick()
       expect(h.task(id).state).toBe('running')
-      expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe(TEXT.continuePr)
+      expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continuePr,
+        host: { state: 'recoveryUnknown' } } }])
+      h.sessions.nativeResult(sid, 'Host owner separately authorized continuing publication.')
       h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), published)
       h.sessions.finish(sid, 'completed', 'PR 开好了')
       await h.tick()
@@ -296,7 +298,7 @@ describe('state table (spec §4.3), one test per row', () => {
     await h.tick()
     expect(h.task(id).state).toBe('running')
     expect([...h.sessions.sessions.get(sid)!.keys]).toEqual([`${id}:g0:resume`])
-    expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe(TEXT.resume)
+    expect(h.sessions.sessions.get(sid)!.turns).toBe(2)
   })
 
   it('running, interrupted again after the resume: paused (turn interrupted)', async () => {
@@ -399,7 +401,9 @@ describe('state table (spec §4.3), one test per row', () => {
     await button(h, 'continue', id)
     await h.tick()
     expect(h.task(id).state).toBe('running')
-    expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe(TEXT.continue)
+    expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continue,
+      host: { state: 'recoveryUnknown' } } }])
+    expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
     expect(h.workers()).toHaveLength(1)
   })
 

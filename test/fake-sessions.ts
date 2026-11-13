@@ -1,3 +1,4 @@
+import type { ManagedInputAdmission, ManagedInputResult } from '@agnes/extension-api'
 import type {
   ManagedSessions,
   ModelRef,
@@ -25,6 +26,7 @@ type FakeSession = {
   usage: SessionUsage
   results: Map<number, ToolResult>
   inputs: string[]
+  admissions: Map<string, { request: ManagedInputAdmission; text: string; result: ManagedInputResult }>
 }
 
 /** A scripted turn end: the fake finishes the turn as soon as it starts. */
@@ -53,7 +55,8 @@ export function fakeSessions(
   const byStartKey = new Map<string, string>()
   let made = 0
   let gate: Gate = () => undefined
-  const calls = { start: 0, send: 0 }
+  const calls = { start: 0, send: 0, admitInput: 0 }
+  const receipts = new Map<string, string>()
   const get = (sessionId: string) => {
     const session = sessions.get(sessionId)
     if (!session) throw new Error(`unknown session ${sessionId}`)
@@ -67,6 +70,7 @@ export function fakeSessions(
     session.status = { kind: 'idle', flags: [] }
     session.ended = { status: outcome }
     push(session, { kind: 'turn', turn: session.turns, status: outcome })
+    pump(session)
   }
   const begin = (session: FakeSession, input: string) => {
     session.inputs.push(input)
@@ -75,6 +79,16 @@ export function fakeSessions(
     push(session, { kind: 'turn', turn: session.turns, status: 'running' })
     const scripted = options.reply?.(session.request, input)
     if (scripted) finish(session, scripted.outcome, scripted.text)
+  }
+  function pump(session: FakeSession) {
+    if (session.status.kind === 'active' || session.archived) return
+    for (const entry of session.admissions.values()) {
+      if (entry.result.state !== 'enqueued') continue
+      entry.result = { ...entry.result, state: 'consumed' }
+      session.keys.add(entry.request.key)
+      begin(session, entry.text)
+      return
+    }
   }
   const refuse = (refusal: Refusal | undefined) => {
     if (refusal) throw rpcRefusal(refusal)
@@ -110,6 +124,7 @@ export function fakeSessions(
         usage: { inputTokens: null, outputTokens: null, cost: null },
         results: new Map(),
         inputs: [],
+        admissions: new Map(),
       }
       sessions.set(sessionId, session)
       byStartKey.set(request.startKey, sessionId)
@@ -119,6 +134,7 @@ export function fakeSessions(
     async send(sessionId, { text, idempotencyKey }): Promise<SendResult> {
       calls.send++
       const session = get(sessionId)
+      if (session.request.taskBinding) throw rpcRefusal({ reason: 'OWNER_INPUT_REQUIRED' })
       if (session.archived) return { state: 'notSubmitted', reason: 'archived' }
       if (session.keys.has(idempotencyKey)) return { state: 'notSubmitted', reason: 'duplicateKey' }
       if (session.status.kind === 'active') return { state: 'notSubmitted', reason: 'busy' }
@@ -126,6 +142,42 @@ export function fakeSessions(
       session.keys.add(idempotencyKey)
       begin(session, text)
       return { state: 'started' }
+    },
+    async admitInput(sessionId, request) {
+      calls.admitInput++
+      const session = get(sessionId)
+      refuse(gate({ op: 'send', workspace: session.request.workspace, bundle: session.request.bundle }))
+      if (session.archived) throw rpcRefusal({ reason: 'SESSION_ARCHIVED' })
+      if (session.request.startKey !== request.target.startKey ||
+        session.request.taskBinding?.id !== request.target.taskId ||
+        session.request.taskBinding?.generation !== request.target.taskGeneration)
+        throw rpcRefusal({ reason: 'OWNER_INPUT_TARGET_MISMATCH' })
+      const old = session.admissions.get(request.key)
+      if (old) {
+        if (JSON.stringify(old.request) !== JSON.stringify(request)) throw rpcRefusal({ reason: 'OWNER_INPUT_KEY_REUSED' })
+        pump(session)
+        return old.result
+      }
+      const input = request.input
+      const text = input.kind === 'ownerMessage' ? receipts.get(input.receiptId)
+        : input.kind === 'legacyOwnerMessage' ? input.text
+          : 'Continue the interrupted turn without treating this recovery as a new owner decision.'
+      if (text === undefined) throw rpcRefusal({ reason: 'CAPABILITY_DENIED' })
+      const result: ManagedInputResult = {
+        state: input.kind === 'legacyOwnerMessage' ? 'recoveryUnknown' : 'enqueued',
+        inputId: request.key, version: 1,
+        reason: input.kind === 'legacyOwnerMessage' ? 'legacySourceUnknown' : 'eligible',
+        reviewLocation: `/?session=${sessionId}&ownerInput=${request.key}`,
+      }
+      const entry = { request: structuredClone(request), text, result }
+      session.admissions.set(request.key, entry)
+      pump(session)
+      return entry.result
+    },
+    async inputResult(sessionId, { key }) {
+      const session = get(sessionId)
+      pump(session)
+      return session.admissions.get(key)?.result ?? { state: 'absent', historyCoverage: 'complete' }
     },
     async list() {
       return [...sessions.values()].map(({ sessionId, request, status, archived }) => ({
@@ -175,6 +227,14 @@ export function fakeSessions(
     port,
     sessions,
     calls,
+    receive(receiptId: string, text: string) {
+      const old = receipts.get(receiptId)
+      if (old !== undefined && old !== text) throw new Error('OWNER_SOURCE_KEY_REUSED')
+      receipts.set(receiptId, text)
+    },
+    nativeResult(sessionId: string, text: string) {
+      begin(get(sessionId), text)
+    },
     /** Refuses matching starts and sends the way the platform's gates do, until set back. */
     gate(next: Gate) {
       gate = next

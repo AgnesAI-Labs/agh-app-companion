@@ -94,21 +94,23 @@ const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
 const HIDDEN_BUT_NEWLINE = /[^\P{Cc}\n]|[\p{Cf}\p{Zl}\p{Zp}]/u
 const NO_LINKS = new Set()
 
-/** True when every link-like token is a complete, exact authorized web URL. */
-export function onlySnapshotLinks(text, links) {
+/** @returns {{ kind: 'valid' | 'denied' } | { kind: 'bare', tokens: { text: string, start: number, end: number }[] }} */
+function inspectLinks(text, links) {
   // A trusted HTTP substring cannot authorize an outer Markdown/reference or custom-scheme URI.
   for (const target of text.matchAll(/(?:\]\(|\[[^\]\n]+\]:)\s*<?([^\s)>]*)/gu)) {
-    if (!/^https?:\/\//iu.test(target[1]) && /[:&\\]/u.test(target[1])) return false
+    if (!/^https?:\/\//iu.test(target[1]) && /[:&\\]/u.test(target[1])) return { kind: 'denied' }
   }
-  if (/<(?!https?:\/\/)[a-z][a-z0-9+.-]*:/iu.test(text)) return false
+  if (/<(?!https?:\/\/)[a-z][a-z0-9+.-]*:/iu.test(text)) return { kind: 'denied' }
   const uriBoundary = /[\s<>`()\[\]{}]/u
   const parts = []
+  const tokens = []
   let after = 0
   for (const token of webUrls(text)) {
     let before = token.start
     while (before > 0 && !uriBoundary.test(text[before - 1])) before--
-    if (/[a-z][a-z0-9+.-]*:|[&\\]/iu.test(text.slice(before, token.start))) return false
-    if (!safeWebUrl(token.text) || !links.has(token.text)) return false
+    if (/[a-z][a-z0-9+.-]*:|[&\\]/iu.test(text.slice(before, token.start))) return { kind: 'denied' }
+    if (!safeWebUrl(token.text) || !links.has(token.text)) return { kind: 'denied' }
+    tokens.push(token)
     parts.push(text.slice(after, token.start), ' ')
     after = token.end
   }
@@ -120,7 +122,16 @@ export function onlySnapshotLinks(text, links) {
     .replace(IDEOGRAPHIC_DOT, (dot, at, all) =>
       /[a-z0-9-]/.test(all[at - 1]) || /[a-z0-9]/.test(all[at + 1]) || IDN_TLD.test(all.slice(at + 1)) ? '.' : dot,
     )
-  return !LINK_SHAPES.some((shape) => shape(folded))
+  if (!LINK_SHAPES.some((shape) => shape(folded))) return { kind: 'valid' }
+  if (SCHEME.test(folded) || IPV6.test(folded) || /[a-z][a-z0-9+.-]*\s*:/u.test(folded) ||
+      /@|\\|&(?:#|[a-z])|%[0-9a-f]{2}/iu.test(folded) ||
+      /[\p{M}\p{Cs}]/u.test(rest)) return { kind: 'denied' }
+  return { kind: 'bare', tokens }
+}
+
+/** True when every link-like token is a complete, exact authorized web URL. */
+export function onlySnapshotLinks(text, links) {
+  return inspectLinks(text, links).kind === 'valid'
 }
 
 export const JUDGE_INSTRUCTIONS = [
@@ -138,26 +149,45 @@ export const JUDGE_INSTRUCTIONS = [
 ].join('\n')
 
 /**
- * The one check for judge-written text: a length bound, no control or format characters, and no
- * link-like token that is not exactly a snapshot link.
  * @param {Decision} d @param {{ links: ReadonlySet<string>, limits: { answerMaxChars: number, titleMaxChars: number } }} ctx
- * @returns {string | undefined} the reason the decision is refused
+ * @returns {{ decision: Decision } | { fault: string }}
  */
-function writtenFault(d, ctx) {
+function prepareWritten(d, ctx) {
+  let decision = d
   for (const [field, type] of Object.entries(FIELDS[d.kind])) {
     const rule = WRITTEN[type]
     if (!rule) continue
     const value = d[field]
-    const fault =
-      (type === 'answer' ? value.length : [...value].length) > rule.max(ctx.limits)
-        ? 'is too long'
-        : (rule.lineBreaks ? HIDDEN_BUT_NEWLINE : HIDDEN).test(value)
-          ? 'has control or format characters'
-          : !onlySnapshotLinks(value, rule.links ? ctx.links : NO_LINKS)
-            ? 'links outside the authorized sources'
-            : undefined
-    if (fault) return `${type} ${fault}`
+    const tooLong = (text) => (type === 'answer' ? text.length : [...text].length) > rule.max(ctx.limits)
+    const hidden = rule.lineBreaks ? HIDDEN_BUT_NEWLINE : HIDDEN
+    if (tooLong(value)) return { fault: `${type} is too long` }
+    if (hidden.test(value)) return { fault: `${type} has control or format characters` }
+    const links = rule.links ? ctx.links : NO_LINKS
+    const inspection = inspectLinks(value, links)
+    if (inspection.kind === 'denied') return { fault: `${type} links outside the authorized sources` }
+    if (inspection.kind === 'bare') {
+      const spell = (part) => [...part].map((char) => {
+        const folded = char.normalize('NFKC')
+        if (char === '。' || folded === '.') return '〔点号〕'
+        if ([...folded].some((c) => '.。:/\\@[]()<>&%`'.includes(c))) {
+          return `〔字符${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}〕`
+        }
+        return char
+      }).join('')
+      let output = ''
+      let after = 0
+      for (const token of inspection.tokens) {
+        output += `${spell(value.slice(after, token.start))} ${token.text} `
+        after = token.end
+      }
+      output += spell(value.slice(after))
+      if (tooLong(output)) return { fault: `${type} is too long` }
+      if (hidden.test(output)) return { fault: `${type} has control or format characters` }
+      if (!onlySnapshotLinks(output, links)) return { fault: `${type} links outside the authorized sources` }
+      decision = { ...decision, [field]: output }
+    }
   }
+  return { decision }
 }
 
 /** @param {{ snapshot: unknown, recent: unknown, batch: BatchItem[], answerMaxChars?: number }} input */
@@ -258,9 +288,9 @@ export function filterDecisions(decisions, ctx) {
   for (const d of decisions) {
     const cited = d.kind === 'create' ? d.messages : d.kind === 'suggest' ? [] : [d.message]
     const links = d.kind === 'answer' ? new Set([...ctx.links, ...ownerLinks(owner.get(d.message) ?? '')]) : ctx.links
-    const fault = writtenFault(d, { ...ctx, links })
-    if (fault || d.kind === 'suggest') {
-      reject(d, fault ?? 'suggestions start in v1b')
+    const written = prepareWritten(d, { ...ctx, links })
+    if ('fault' in written || d.kind === 'suggest') {
+      reject(d, 'fault' in written ? written.fault : 'suggestions start in v1b')
       continue
     }
     if (d.kind === 'ignore') {
@@ -276,7 +306,7 @@ export function filterDecisions(decisions, ctx) {
       if (answered.has(d.message)) reject(d, 'second answer to one message')
       else {
         answered.add(d.message)
-        out.accepted.push(d)
+        out.accepted.push(written.decision)
       }
       continue
     }
@@ -313,7 +343,7 @@ export function filterDecisions(decisions, ctx) {
       continue
     }
     cited.forEach((id) => handled.add(id))
-    out.accepted.push(d)
+    out.accepted.push(written.decision)
   }
   for (const id of owner.keys())
     if (!handled.has(id) && !answered.has(id)) out.fallbacks.push(id)

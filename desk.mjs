@@ -205,6 +205,8 @@ const EMPTY = Object.freeze({
   workspaces: [],
   tasks: { needsYou: [], running: [], queued: [], paused: [], recent: [], older: [], olderTotal: 0, unknown: [] },
   cards: [],
+  ownerInputs: [],
+  ownerInputsTotal: 0,
   messages: [],
   judge: { backoff: null, waiting: 0 },
   usage: { today: null, caps: { dailyCost: null, taskCost: null, taskTokens: null, maxHops: null }, near: NEAR_CAP, top: [] },
@@ -283,6 +285,12 @@ export async function buildDesk(deps, input = {}) {
     },
     cards: cardViews(store, GROUP_MAX),
     messages: messageViews(store, at, limits),
+    ownerInputs: store.scan('op/').filter(({ value }) => value.kind === 'ownerInput' || value.kind === 'send').slice(0, GROUP_MAX).map(({ value }) => ({
+      key: value.key, taskId: value.taskId, text: value.originalText ?? value.input,
+      sessionId: value.target?.sessionId ?? null, inputId: value.host?.inputId ?? null,
+      state: value.host?.state ?? 'historyUnknown', reason: value.host?.reason ?? '原目标或发送事实尚未证实',
+    })),
+    ownerInputsTotal: store.scan('op/').filter(({ value }) => value.kind === 'ownerInput' || value.kind === 'send').length,
     judge: judgeView(store),
     usage: {
       today: usageDay ? { date: at.slice(0, 10), basis: 'UTC', tokens: usageDay.tokens, cost: usageDay.cost, unknown: Boolean(usageDay.unknown) } : null,

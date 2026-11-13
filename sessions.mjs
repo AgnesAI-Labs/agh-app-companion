@@ -12,7 +12,7 @@
  * @typedef {{ route: string, model: string }} ModelRef
  * @typedef {{
  *   bundle: string, workspace: string, input: string, startKey: string, retention: Retention,
- *   permission: Permission, memoryWrites: boolean, skillInstalls: boolean, model?: ModelRef,
+ *   permission: Permission, memoryWrites: boolean, skillInstalls: boolean, model?: ModelRef, taskBinding?: { id: string, generation: number },
  * }} StartRequest  model absent = deployment default; a route the deployment lacks is refused, never replaced
  * @typedef {{ state: 'started' } | { state: 'notSubmitted', reason: 'busy' | 'archived' | 'duplicateKey' }} SendResult
  * @typedef {'completed' | 'failed' | 'cancelled'} TurnEnd
@@ -36,6 +36,8 @@
  * @typedef {{
  *   start(request: StartRequest): Promise<{ sessionId: string, created: boolean }>,
  *   send(sessionId: string, input: { text: string, idempotencyKey: string }): Promise<SendResult>,
+ *   admitInput(sessionId: string, input: import('@agnes/extension-api').ManagedInputAdmission): Promise<import('@agnes/extension-api').ManagedInputResult>,
+ *   inputResult(sessionId: string, input: { key: string }): Promise<import('@agnes/extension-api').ManagedInputResult>,
  *   list(): Promise<readonly SessionRow[]>,
  *   status(sessionId: string): Promise<SessionStatus>,
  *   events(sessionId: string, options?: { afterSeq?: number }): Promise<{ events: readonly SessionEvent[], lastSeq: number }>,
@@ -72,7 +74,7 @@ export const ROLES = Object.freeze({
 
 /**
  * @param {Role} role
- * @param {{ workspace: string, input: string, startKey: string, model?: ModelRef }} input
+ * @param {{ workspace: string, input: string, startKey: string, model?: ModelRef, taskBinding?: { id: string, generation: number } }} input
  * @returns {StartRequest}
  */
 export function startRequest(role, { model, ...rest }) {

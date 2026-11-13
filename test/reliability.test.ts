@@ -92,14 +92,15 @@ describe('restarts in the middle of each session operation (items 1-5)', () => {
     h.sessions.setUsage(sid, { tokens: 150, cost: null })
     await h.tick()
     expect(h.task(id).state).toBe('paused')
-    h.sessions.port.send = crashAfterOnce(h.sessions.port.send)
+    h.sessions.port.admitInput = crashAfterOnce(h.sessions.port.admitInput)
     await h.signal({ kind: 'button', action: 'continue', taskId: id })
     await pass(h)
     h.restart()
     await h.tick()
-    expect(h.sessions.sessions.get(sid)!.inputs.filter((i) => i === TEXT.continue)).toHaveLength(1)
+    expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
     expect(h.task(id).state).toBe('running')
-    expect(h.store.scan('op/')).toEqual([])
+    expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continue,
+      host: { state: 'recoveryUnknown' } } }])
   })
 
   it('a turn interrupted mid-way resumes once even when the resume died, and a second interruption after a restart pauses', async () => {
@@ -107,19 +108,19 @@ describe('restarts in the middle of each session operation (items 1-5)', () => {
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
     h.sessions.finish(sid, 'cancelled')
-    h.sessions.port.send = crashAfterOnce(h.sessions.port.send)
+    h.sessions.port.admitInput = crashAfterOnce(h.sessions.port.admitInput)
     await pass(h)
     h.restart()
     await h.tick()
     const session = h.sessions.sessions.get(sid)!
-    expect(session.inputs.filter((i) => i === TEXT.resume)).toHaveLength(1)
+    expect(session.turns).toBe(2)
     expect(h.task(id)).toMatchObject({ state: 'running', resumed: 1 })
-    expect(h.channel.texts().filter((t) => t.includes('已自动续跑一次'))).toHaveLength(1)
+    expect(h.channel.texts().filter((t) => t.includes('恢复请求已保留'))).toHaveLength(1)
     h.sessions.finish(sid, 'cancelled')
     h.restart()
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'turnInterrupted' })
-    expect(session.inputs.filter((i) => i === TEXT.resume)).toHaveLength(1)
+    expect(session.turns).toBe(2)
   })
 
   it('stop: a crash between the stop and the interrupt leaves the task abandoned and the interrupt is delivered after the restart', async () => {
@@ -172,7 +173,7 @@ describe('restarts in the middle of each session operation (items 1-5)', () => {
     expect(h.channel.texts()).toHaveLength(told)
   })
 
-  it('a busy session tells the owner once, however many passes and restarts wait for it', async () => {
+  it('keeps one durable admission across busy passes and restarts, consuming it only when idle', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
@@ -181,36 +182,38 @@ describe('restarts in the middle of each session operation (items 1-5)', () => {
       await h.tick()
       h.restart()
     }
-    expect(h.channel.texts().filter((t) => t === TEXT.busy)).toHaveLength(1)
+    expect(h.store.scan('op/')).toMatchObject([{ value: { host: { state: 'enqueued' } } }])
     expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
     h.sessions.finish(sid, 'completed', 'ok')
     await h.tick()
     expect(h.sessions.sessions.get(sid)!.inputs.filter((i) => i === '顺便改下文案')).toHaveLength(1)
   })
 
-  it('a send into a session archived under it parks the task as lost and keeps the message for the new generation', async () => {
+  it('retains the fixed original target when it is archived and never transfers that input to a new generation', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
     h.sessions.finish(sid, 'completed', 'ok')
     await h.tick()
-    const send = h.sessions.port.send
-    h.sessions.port.send = async (sessionId, input) => {
+    const admit = h.sessions.port.admitInput
+    h.sessions.port.admitInput = async (sessionId, input) => {
       h.sessions.sessions.get(sessionId)!.archived = true
-      return send(sessionId, input)
+      return admit(sessionId, input)
     }
     await h.say('再改一下', { replyTo: id })
     await h.tick()
+    await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'sessionLost' })
     expect(h.store.scan('op/')).toHaveLength(1)
-    h.sessions.port.send = send
+    h.sessions.port.admitInput = admit
     await h.say(`继续 ${id}`)
     await h.tick()
     const fresh = h.workers().find((s) => s.request.startKey === `${id}:1`)!
     h.sessions.finish(fresh.sessionId, 'completed', 'ok')
     await h.tick()
-    expect(fresh.inputs.at(-1)).toBe('再改一下')
-    expect(h.store.scan('op/')).toEqual([])
+    expect(fresh.inputs).toHaveLength(1)
+    expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput',
+      originalText: '再改一下', target: { sessionId: sid, taskGeneration: 0 } } }])
   })
 })
 

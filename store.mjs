@@ -32,7 +32,7 @@
  * @typedef {import('@agnes/extension-api').OwnedStore} OwnedStore
  */
 
-export const STORE_FORMAT = 1
+export const STORE_FORMAT = 2
 // The Host caps one value at 64 KiB; the margin leaves room for the chunk's own fields.
 export const EVENT_CHUNK_MAX_BYTES = 48 * 1024
 export const STORE_MAX_KEYS = 10000
@@ -78,6 +78,10 @@ function checkFormat(owned) {
     return
   }
   const format = meta && typeof meta === 'object' && !Array.isArray(meta) ? meta.format : undefined
+  if (format === 1) {
+    owned.set('meta', { ...meta, format: STORE_FORMAT })
+    return
+  }
   if (format === STORE_FORMAT) return
   if (Number.isSafeInteger(format) && format > STORE_FORMAT) throw new StoreFormatError('newer', format)
   throw new StoreFormatError('unreadable', format)

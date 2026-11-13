@@ -90,10 +90,10 @@ describe('crash points (spec §4.2 step 6, §6, §8 idempotency)', () => {
     const sid = h.sessionOf(id)
     h.sessions.finish(sid, 'completed', 'ok')
     await h.tick()
-    const send = h.sessions.port.send
+    const admit = h.sessions.port.admitInput
     let armed = true
-    h.sessions.port.send = async (sessionId, input) => {
-      const result = await send(sessionId, input)
+    h.sessions.port.admitInput = async (sessionId, input) => {
+      const result = await admit(sessionId, input)
       if (armed) {
         armed = false
         throw new Error('crash')
@@ -108,14 +108,14 @@ describe('crash points (spec §4.2 step 6, §6, §8 idempotency)', () => {
     expect(h.store.scan('op/')).toEqual([])
   })
 
-  it('a reply while the session is busy is kept, the owner is told, and it is sent once when idle', async () => {
+  it('an enqueued reply is not consumed until the running turn ends', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
     await h.say('顺便改下文案', { replyTo: id })
     await h.tick()
     await h.tick()
-    expect(h.channel.texts().filter((t) => t.includes('会话正忙'))).toHaveLength(1)
+    expect(h.store.scan('op/')[0]?.value.host).toMatchObject({ state: 'enqueued' })
     expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
     h.sessions.finish(sid, 'completed', 'ok')
     await h.tick()
@@ -136,5 +136,64 @@ describe('crash points (spec §4.2 step 6, §6, §8 idempotency)', () => {
     expect(h.signal({ kind: 'message', text: 'x', origin: 'boss' })).toMatchObject({ kind: 'invalid' })
     expect(h.signal({ kind: 'message', text: 'x', eventId: 'e'.repeat(129) })).toMatchObject({ kind: 'invalid' })
     expect(h.store.scan('inbox/')).toEqual([])
+  })
+})
+
+describe('Host-owned input obligations', () => {
+  it('saves every busy pending body separately and lets another task finish across restart and inbox TTL', async () => {
+    const h = harness()
+    const waiting = await h.create('任务一', 'api')
+    const independent = await h.create('任务二', 'web')
+    const sid = h.sessionOf(waiting)
+    await h.say('第一条完整原话', { eventId: 'pending-one', replyTo: waiting })
+    await h.say('第二条完整原话', { eventId: 'pending-two', replyTo: waiting })
+    await h.tick()
+    h.sessions.finish(h.sessionOf(independent), 'completed', 'Independent result.')
+    h.advance(8 * 24 * 60 * 60 * 1000)
+    h.restart()
+    await h.tick()
+    const pending = h.store.scan('op/').filter(({ value }) => value.taskId === waiting)
+    expect(pending.map(({ value }) => value.originalText)).toEqual(['第一条完整原话', '第二条完整原话'])
+    expect(pending.map(({ value }) => value.target)).toEqual([
+      { sessionId: sid, taskId: waiting, taskGeneration: 0, startKey: `${waiting}:0` },
+      { sessionId: sid, taskId: waiting, taskGeneration: 0, startKey: `${waiting}:0` },
+    ])
+    expect(pending.map(({ value }) => value.host.state)).toEqual(['enqueued', 'enqueued'])
+    expect(h.store.get('inbox/im:pending-one')).toBeDefined()
+    expect(h.store.get('inbox/im:pending-two')).toBeDefined()
+    expect(h.task(independent).state).toBe('done')
+    expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
+    expect(h.sessions.calls.send).toBe(0)
+  })
+
+  it('keeps legacy unknown with its original body instead of borrowing the current generation', async () => {
+    const h = harness()
+    const id = await h.create('历史任务')
+    const sid = h.sessionOf(id)
+    h.store.putTask({ ...h.task(id), generation: 1 })
+    h.store.set('op/000000900', { seq: 900, taskId: id, kind: 'send', input: '历史未确认原话',
+      key: `${id}:old`, inbox: null, busyNoticed: false })
+    h.restart()
+    await h.tick()
+    const old = h.store.get('op/000000900')
+    expect(old).toMatchObject({ kind: 'ownerInput', key: `${id}:old`, originalText: '历史未确认原话',
+      target: null, request: null, legacy: true })
+    expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
+    h.restart()
+    await h.tick()
+    expect(h.store.get('op/000000900')).toEqual(old)
+    expect(h.sessions.calls.send).toBe(0)
+  })
+
+  it('rejects changed payload under a persisted source key and keeps its dedupe identity after history pruning', async () => {
+    const h = harness()
+    const original = { source: 'im', eventId: 'immutable', at: h.now(), kind: 'message', origin: 'owner',
+      text: 'Original body.', receiptId: 'host-receipt' }
+    expect(await h.engine.receive(original)).toMatchObject({ kind: 'accepted' })
+    expect(await h.engine.receive({ ...original, text: 'Other body.' })).toMatchObject({ kind: 'invalid' })
+    h.store.delete('inbox/im:immutable')
+    h.restart()
+    expect(await h.engine.receive(original)).toMatchObject({ kind: 'duplicate' })
+    expect(await h.engine.receive({ ...original, receiptId: 'other-receipt' })).toMatchObject({ kind: 'invalid' })
   })
 })

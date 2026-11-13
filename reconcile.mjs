@@ -153,6 +153,7 @@ function apply(tx, taskId, event, reply, waitingOnUserInput) {
     }
   }
   if (event.kind !== 'turn' || event.status === 'running' || event.status === 'waiting') return
+  tx.store.putTask({ ...getTask(tx, taskId), lastTurnEndSeq: event.seq })
   if (event.status === 'completed' && waitingOnUserInput) return
   if (event.status === 'failed') return void transit(tx, taskId, 'sessionFailed')
   if (event.status === 'cancelled') return void transit(tx, taskId, 'turnInterrupted')

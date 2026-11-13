@@ -76,6 +76,13 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     if (!parsed.ok) return /** @type {const} */ ({ kind: 'invalid', error: parsed.error })
     const t = tx()
     return t.store.transaction(() => {
+      const digest = hash(JSON.stringify(parsed.signal))
+      const previous = t.store.get(`source-event/${parsed.key}`)
+      if (previous && previous.hash !== digest) return { kind: 'invalid', error: 'source event key reused with another payload' }
+      const existing = t.store.get(parsed.key)
+      if (existing && hash(JSON.stringify(existing.signal)) !== digest) return { kind: 'invalid', error: 'source event key reused with another payload' }
+      if (previous) return { kind: 'duplicate', key: parsed.key }
+      t.store.set(`source-event/${parsed.key}`, { hash: digest })
       if (t.store.get(parsed.key)) return /** @type {const} */ ({ kind: 'duplicate', key: parsed.key })
       /** @type {import('./signals.mjs').InboxEntry} */
       const entry = { key: parsed.key, signal: parsed.signal, receivedAt: t.at, disposition: null, disposedAt: null, handedBack: false, newFrom: null }
