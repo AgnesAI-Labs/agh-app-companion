@@ -32,9 +32,8 @@ and the chat channel adapter over the platform's channel targets.
 
 These steps come from the real-daemon run in an isolated home (see "Prove it on a real daemon"
 below). They need an Agnes Harness build with plugin-managed sessions (agnes-harness `develop` at
-`93c3e4776` or later, which has channel targets, Extension API 5.12 and the plugin live-reload fix, and contains
-[agnes-harness#633](https://github.com/AgnesAI-Labs/agnes-harness/pull/633)) and a working model
-route.
+`5afbfdb4f18aae33a3739061e398b49b7adbfb78` or later, with Extension API 5.21 and owner-input
+admission and receipts) and a working model route.
 
 1. Install from a checkout of this repository:
 
@@ -167,9 +166,8 @@ finishes as done. `ask_owner` refuses a session that is not a running task sessi
 
 ## Chat channel
 
-The Companion has no chat client of its own. It needs an AGH build with channel targets (Extension
-API 5.13, which sends buttons and reports quoted replies and clicks); the exact `develop` commit that contains them is to be filled in here once that change
-is merged, and a host without it refuses to install this package.
+The Companion has no chat client of its own. It needs an AGH build with channel targets and
+Extension API 5.21 owner-input receipts; older hosts are refused.
 
 1. Install and enable the channel plugin for your chat app (for example the Feishu one) and start
    its instance.
@@ -192,6 +190,12 @@ Buttons and quotes (needs a chat plugin that supports cards and quotes; the Feis
   can see where it points.
 
 After an AGH daemon restart, Companion restores its watched worker sessions and reconciles pending cards.
+
+Owner messages sent to an existing task are admitted by the Host against that task's original
+session generation. A queued input is not necessarily executing: the Host may hold it while busy,
+or require an owner decision on the Web. Unknown legacy sends are submitted for Web review, not
+automatically replayed. A permanent admission refusal preserves the original input and key locally.
+Stopping or disabling the plugin does not itself retract an input already in the session inbox.
 
 ## Not working yet
 
@@ -216,10 +220,26 @@ sh scripts/companion-test.sh
 ```
 
 Session behavior is tested against `test/fake-sessions.ts`, which speaks the platform's shapes and
-refusals through the real adapter. The end-to-end run below is the only check against a real
-daemon. The package
+refusals through the real adapter. The package
 declaration sets `sessions: true`, which only a harness with plugin-managed sessions accepts, so
 `test/package.test.ts` passes only with `AGNES_HARNESS` pointing at such a checkout.
+
+On 2026-11-15 the focused owner-input, channel, state, service and desk checks passed (9 files,
+257 tests) with Node v24.20.0 via the AGH toolchain runner. After further slot and input-identity
+fixes, a focused six-file check passed 156 tests, and after question-identity fixes three files
+passed 100 tests. In an isolated home, a source-built daemon and DeepSeek model created a task,
+accepted a Web-reviewed legacy continuation, and answered a native Web question. With a synthetic
+channel provider (not Feishu), one owner message appeared once in its session and its requested
+file change appeared once after a restart; the session journal shows it had already been consumed
+before that restart. A later diagnostic run observed a receipt `enqueued` with reason `busy` and
+no consumed sequence before and after stopping the daemon. After restart the Host moved that same
+input to `needsOwner` with `grantRevoked`, without consuming it. The session owner and workspace,
+grant rows and package eligibility matched in the snapshots; the underlying gate refusal was not
+exposed. A separate recovery input was consumed, not the owner's input. Automatic single consumption
+across that restart was not established.
+An archived session's pending input remained visible and was kept through
+the Host Web as `retained` with `ownerRetained`; archiving alone was not observed to cause that
+transition. A real Feishu card click remains unverified.
 
 ## Prove it on a real daemon
 

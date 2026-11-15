@@ -6,6 +6,7 @@
 export const STATE = {
   waiting: { text: '等你', tone: 'warn', icon: 'hand' },
   running: { text: '进行中', tone: 'info', icon: 'play' },
+  pendingInput: { text: '等待平台处理输入', tone: 'warn', icon: 'clock' },
   queued: { text: '排队中', tone: 'neutral', icon: 'clock' },
   done: { text: '完成', tone: 'ok', icon: 'check' },
   failed: { text: '失败', tone: 'bad', icon: 'x' },

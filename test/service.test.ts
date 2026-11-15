@@ -252,6 +252,26 @@ describe('companion service', () => {
     expect(await s.shutdown()).toEqual({ state: 'settled' })
   })
 
+  it.each(['admitInput', 'inputResult'])('refuses an old host without %s before starting the engine', async (missing) => {
+    const sessions = { ...scripted().port, [missing]: undefined }
+    const s = service({ sessions })
+    const svc = await s.started
+    expect(svc.status()).toMatchObject({ running: false, problems: expect.arrayContaining([{ kind: 'capability', missing: 'managedSessions', text: expect.stringContaining('5.21') }]) })
+    expect(vi.getTimerCount()).toBe(0)
+    await s.shutdown()
+  })
+
+  it('acknowledges permanent event drops but propagates pairing lookup failures', async () => {
+    const gateway = fakeGateway()
+    const s = service({ sessions: scripted().port, gateway })
+    await s.started
+    await expect(gateway.emit({ ...gateway.message('陌生人'), sender: gateway.stranger, receiptId: 'foreign' })).resolves.toBeUndefined()
+    await expect(gateway.emit({ ...gateway.message('坏消息'), chat: null, receiptId: 'invalid' })).resolves.toBeUndefined()
+    gateway.channels.pairing = async () => { throw new Error('temporary pairing outage') }
+    await expect(gateway.emit({ ...gateway.message('在吗'), receiptId: 'retry' })).rejects.toThrow('temporary pairing outage')
+    await s.shutdown()
+  })
+
   it('reports unfinished settings instead of running, and touches no session', async () => {
     const sessions = scripted()
     const s = service({ sessions: sessions.port, gateway: fakeGateway(), config: DEFAULT_SETTINGS })
@@ -266,7 +286,7 @@ describe('companion service', () => {
         },
       ],
     })
-    expect(sessions.calls).toEqual({ start: 0, send: 0 })
+    expect(sessions.calls).toEqual({ start: 0, send: 0, admitInput: 0 })
     await s.shutdown()
   })
 
@@ -513,7 +533,7 @@ describe('companion service', () => {
     })
     expect(await next.receive(status)).toMatchObject({ kind: 'dropped' })
     expect(gateway.shown).toHaveLength(0)
-    expect(sessions.calls).toEqual({ start: 0, send: 0 })
+    expect(sessions.calls).toEqual({ start: 0, send: 0, admitInput: 0 })
     expect(owned.rows.size).toBe(rows)
     expect(owned.get('meta')).toMatchObject({ channelOwner: { userId: OWNER.userId } })
     await second.shutdown()

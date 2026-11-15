@@ -182,7 +182,7 @@ function More({ task, onDetail, onReopen, onStop }) {
     fn()
   }
   const href = sessionHref(task)
-  const unfinished = ['queued', 'running', 'waiting', 'paused'].includes(task.state)
+  const unfinished = ['queued', 'running', 'pendingInput', 'waiting', 'paused'].includes(task.state)
   return h(
     'span',
     {
@@ -472,7 +472,7 @@ function Drawer({ task, detail, now, act, onClose }) {
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
         h(Primary, { task, act }),
         task.state !== 'running' && task.sessionId ? h(SessionLink, { task, label: '打开会话' }) : null,
-        ['queued', 'running', 'waiting', 'paused'].includes(task.state) ? h('button', { type: 'button', className: 'cp-btn cp-danger', onClick: () => act.stop(task.id) }, '停止…') : null,
+        ['queued', 'running', 'pendingInput', 'waiting', 'paused'].includes(task.state) ? h('button', { type: 'button', className: 'cp-btn cp-danger', onClick: () => act.stop(task.id) }, '停止…') : null,
         task.state === 'done' ? h('button', { type: 'button', className: 'cp-btn', onClick: () => act.reopen(task.id) }, '重开…') : null),
       task.state === 'queued' ? h('div', null, h('h3', null, '排队'), h('p', { style: { margin: 0 } }, `${queueText(task)}。轮到时自动开始，不用你操作。`)) : null,
       task.state === 'waiting' && task.wait === 'approval' ? h('div', null, h('h3', null, '等你批准'), h('p', { className: 'cp-muted', style: { margin: 0 } }, '批准在会话页里做，打开会话查看要批准的内容。这里不显示仓库、分支和文件。')) : null,

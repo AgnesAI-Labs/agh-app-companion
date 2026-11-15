@@ -148,13 +148,112 @@ describe('pausing and new generations', () => {
     await h.tick()
     await h.signal({ kind: 'button', action: 'continue', taskId: id })
     await h.tick()
-    expect(h.task(id)).toMatchObject({ state: 'running', resumed: 0 })
+    expect(h.task(id)).toMatchObject({ state: 'pendingInput', resumed: 0 })
     expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continue,
       host: { state: 'recoveryUnknown' } } }])
-    h.sessions.nativeResult(sid, 'Host native owner continuation.')
+    h.sessions.deliverRecovery(sid, 'Host native owner continuation.')
     h.sessions.finish(sid, 'completed', 'ok')
     await h.tick()
     expect(h.task(id).state).toBe('done')
+  })
+
+  it('does not claim execution when Host retains a continued input', async () => {
+    const h = harness({ limits: { taskTokens: 100 } })
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.setUsage(sid, { tokens: 150, cost: null })
+    await h.tick()
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    expect(h.task(id).state).toBe('pendingInput')
+    const result = h.sessions.port.inputResult
+    h.sessions.port.inputResult = async (sessionId, input) => {
+      const current = await result(sessionId, input)
+      return current.state === 'recoveryUnknown' ? { ...current, state: 'retained', reason: 'ownerRetained' } : current
+    }
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'platform' })
+    expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
+  })
+
+  it('continues once into a new generation when Host retained the input because the session was archived', async () => {
+    const h = harness({ limits: { taskTokens: 100 } })
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.setUsage(sid, { tokens: 150, cost: null })
+    await h.tick()
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    const key = h.task(id).pendingInputKey
+    await h.sessions.port.archive(sid)
+    const inputResult = h.sessions.port.inputResult
+    h.sessions.port.inputResult = async (sessionId, input) => {
+      const current = await inputResult(sessionId, input)
+      return input.key === key ? { ...current, state: 'retained', reason: 'sessionArchived' } : current
+    }
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'sessionLost', generation: 0 })
+    expect(h.store.get(`input-result/${key}`).host).toMatchObject({ state: 'retained', reason: 'sessionArchived' })
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'running', generation: 1 })
+    expect(h.sessionOf(id)).not.toBe(sid)
+    expect(h.sessions.sessions.get(h.sessionOf(id))!.inputs).toHaveLength(1)
+    expect(h.store.scan('op/').some(({ value }) => value.key === key)).toBe(false)
+  })
+
+  it.each(['OWNER_INPUT_TARGET_MISMATCH', 'SESSION_ARCHIVED'])('parks a refused continuation (%s) and releases its slot', async (code) => {
+    const h = harness({ limits: { taskTokens: 100 } })
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.setUsage(sid, { tokens: 150, cost: null })
+    await h.tick()
+    h.sessions.gate(({ op }) => op === 'send' ? { reason: code } : undefined)
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'paused', reason: code === 'SESSION_ARCHIVED' ? 'sessionLost' : 'platform' })
+    const op = h.store.scan('op/').find(({ value }) => value.refusal?.code === code)!.value
+    expect(op).toMatchObject({ target: { sessionId: sid }, originalText: TEXT.continue })
+    const other = await h.create('另一项')
+    expect(h.task(other).state).toBe('running')
+    h.restart()
+    await h.tick()
+    expect(h.store.scan('op/').find(({ value }) => value.key === op.key)?.value.refusal.code).toBe(code)
+  })
+
+  it('does not let an older consumed input release a newer pending continuation', async () => {
+    const h = harness({ limits: { taskTokens: 100 } })
+    const id = await h.create('修登录')
+    const sid = h.sessionOf(id)
+    h.sessions.setUsage(sid, { tokens: 150, cost: null })
+    await h.tick()
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    const key = h.task(id).pendingInputKey
+    const current = h.store.scan('op/').find(({ value }) => value.key === key)!.value
+    h.store.set('op/000000000', { ...current, key: `${id}:older`, request: { ...current.request, key: `${id}:older` } })
+    const inputResult = h.sessions.port.inputResult
+    h.sessions.port.inputResult = async (sessionId, input) => input.key.endsWith(':older')
+      ? { state: 'consumed', inputId: input.key, version: 1, reason: 'eligible', reviewLocation: '/' }
+      : inputResult(sessionId, input)
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'pendingInput', pendingInputKey: key })
+    expect(h.store.get(`input-result/${id}:older`)).toBeDefined()
+  })
+
+  it('recovers an older pending task key from its recorded continuation after restart', async () => {
+    const h = harness({ limits: { taskTokens: 100 } })
+    const id = await h.create('修登录')
+    h.sessions.setUsage(h.sessionOf(id), { tokens: 150, cost: null })
+    await h.tick()
+    await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    const key = h.task(id).pendingInputKey
+    const { pendingInputKey, ...old } = h.task(id)
+    h.store.putTask(old)
+    h.restart()
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'pendingInput', pendingInputKey: key })
   })
 
   it('never moves an uncertain original-session reply into a new generation after continue', async () => {
@@ -181,7 +280,7 @@ describe('pausing and new generations', () => {
     const id = await h.create('修登录')
     h.sessions.finish(h.sessionOf(id), 'cancelled')
     await h.tick()
-    expect(h.channel.texts()).toContain(`${id}（api）修登录：回合中断，已自动续跑一次`)
+    expect(h.channel.texts()).toContain(`${id}（api）修登录：回合中断，恢复请求已保留，交由 Host 核查输入资格`)
   })
 
   it('a start the platform keeps refusing does not stop messages or other tasks', async () => {

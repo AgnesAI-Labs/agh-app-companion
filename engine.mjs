@@ -58,7 +58,8 @@ export function createEngine({ store, sessions, channel, settings, now = () => n
     return t.store.transaction(() => {
       const task = allTasks(t).find((candidate) => candidate.state === 'running' && candidate.sessionId === sessionKey)
       if (!task) return /** @type {const} */ ({ ok: false })
-      t.store.putTask({ ...task, question: { text, options, at: t.at, generation: task.generation } })
+      const questionSerial = (task.questionSerial ?? 0) + 1
+      t.store.putTask({ ...task, questionSerial, question: { text, options, at: t.at, generation: task.generation, id: questionSerial } })
       return /** @type {const} */ ({ ok: true, taskId: task.id })
     })
   }

@@ -53,6 +53,40 @@ describe('managed sessions contract (fake, not proven on the real platform)', ()
     expect(await port.start(request)).toEqual({ sessionId: first.sessionId, created: false })
   })
 
+  it('refuses a changed first input for the same start key', async () => {
+    const { port } = fakeSessions()
+    const request = startRequest('worker', { workspace: '/w', input: 'first', startKey: 'task-1' })
+    await port.start(request)
+    await expect(port.start({ ...request, input: 'different' })).rejects.toMatchObject({ data: { reason: 'START_KEY_REUSED' } })
+  })
+
+  it('parks an unknown owner receipt for review instead of rejecting admission', async () => {
+    const { port } = fakeSessions()
+    const request = { ...startRequest('worker', { workspace: '/w', input: 'first', startKey: 'task-1' }),
+      taskBinding: { id: 'task-1', generation: 0 } }
+    const { sessionId } = await port.start(request)
+    const result = await port.admitInput(sessionId, {
+      key: 'owner-1', target: { taskId: 'task-1', taskGeneration: 0, startKey: 'task-1' },
+      input: { kind: 'ownerMessage', receiptId: 'unknown' },
+    })
+    expect(result).toMatchObject({ state: 'needsOwner', reason: 'receiptUnknown' })
+  })
+
+  it('binds recovery to the latest cancelled turn, not an earlier turn', async () => {
+    const fake = fakeSessions()
+    const request = { ...startRequest('worker', { workspace: '/w', input: 'first', startKey: 'task-1' }),
+      taskBinding: { id: 'task-1', generation: 0 } }
+    const { sessionId } = await fake.port.start(request)
+    const target = { taskId: 'task-1', taskGeneration: 0, startKey: 'task-1' }
+    fake.finish(sessionId, 'cancelled')
+    const firstSeq = (await fake.port.events(sessionId)).lastSeq
+    expect(await fake.port.admitInput(sessionId, { key: 'recover-1', target, input: { kind: 'recoveryContinuation', turnEndSeq: firstSeq } })).toMatchObject({ state: 'consumed' })
+    fake.finish(sessionId, 'cancelled')
+    const secondSeq = (await fake.port.events(sessionId)).lastSeq
+    expect(await fake.port.admitInput(sessionId, { key: 'stale', target, input: { kind: 'recoveryContinuation', turnEndSeq: firstSeq } })).toMatchObject({ state: 'recoveryUnknown' })
+    expect(await fake.port.admitInput(sessionId, { key: 'recover-2', target, input: { kind: 'recoveryContinuation', turnEndSeq: secondSeq } })).toMatchObject({ state: 'consumed' })
+  })
+
   it('refuses a model route the deployment does not serve instead of falling back', async () => {
     const { port } = fakeSessions({ routes: [{ route: 'r', model: 'big' }] })
     await expect(
@@ -104,6 +138,8 @@ describe('the platform adapter and approval outcomes', () => {
     const calls: unknown[] = []
     const raw = { events: [{ kind: 'approval', seq: 4, state: 'decided', category: 'permission', summary: '' }, outcome], lastSeq: 5 }
     const port = platformSessions({
+      admitInput: async () => ({}),
+      inputResult: async () => ({}),
       events: async (id: string, options?: unknown) => (calls.push([id, options]), raw),
     } as never)!
     expect(await port.events('s1', { afterSeq: 3 })).toEqual(raw)

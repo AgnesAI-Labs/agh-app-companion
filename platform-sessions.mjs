@@ -61,6 +61,18 @@ export const REFUSALS = Object.freeze({
     scope: 'start',
     text: () => '这个任务的会话已归档。对任务说“继续”会换一个新会话。',
   },
+  OWNER_INPUT_REQUIRED: {
+    retryable: false, scope: 'start',
+    text: () => '平台要求使用主人输入准入；原消息已保留，请检查平台与伴侣版本。',
+  },
+  OWNER_INPUT_TARGET_MISMATCH: {
+    retryable: false, scope: 'start',
+    text: () => '平台拒绝了不匹配原任务会话的主人输入；原消息和目标已保留。',
+  },
+  OWNER_INPUT_KEY_REUSED: {
+    retryable: false, scope: 'start',
+    text: () => '主人输入身份与已有请求冲突；原消息和身份已保留，不会换身份重发。',
+  },
   // Not a platform code: the companion's own refusal after repeated start errors it cannot name.
   START_FAILED: {
     retryable: false,
@@ -123,7 +135,7 @@ export function refusalOf(error) {
  * @returns {ManagedSessions | undefined}
  */
 export function platformSessions(platform) {
-  if (!platform) return undefined
+  if (!platform || typeof platform.admitInput !== 'function' || typeof platform.inputResult !== 'function') return undefined
   /** @template {unknown[]} A @template R @param {(...args: A) => Promise<R>} call */
   const guarded =
     (call) =>

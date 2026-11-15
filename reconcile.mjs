@@ -26,6 +26,8 @@ export async function reconcile(deps) {
   }
   const tasks = allTasks(deps.tx()).filter((t) => SLOT_STATES.includes(t.state) && t.sessionId)
   for (const task of tasks) {
+    // Do not advance the cursor past a continuation before Host confirms the admission.
+    if (task.state === 'pendingInput') continue
     const row = rows.get(task.sessionId)
     if (!row || row.archived) {
       const tx = deps.tx()

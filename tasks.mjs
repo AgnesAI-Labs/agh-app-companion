@@ -18,7 +18,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   state: TaskState, reason: StateReason | null, origin: { kind: 'owner', inbox: string[] }, hops: number,
  *   sessionId: string | null, generation: number, cursor: number, resumed: number, refusals: number,
  *   usage: Usage, reading: Usage, budgetBase: Usage, prUrl: string | null, repo: string | null, publishCalls: number[], prFailed: string | null,
- *   attach: AttachMark | null, question?: Question | null,
+ *   attach: AttachMark | null, question?: Question | null, questionSerial?: number, pendingInputKey?: string | null,
  *   eventSeq: number, createdAt: string, updatedAt: string, endedAt: string | null, eventChunks: number,
  *   compacted: { events: number, firstAt: string | null, lastAt: string | null } | null,
  * }} Task
@@ -29,7 +29,7 @@ import { namesOtherWorkspace } from './signals.mjs'
  *   | { kind: 'send', input: string, key: string, inbox: string | null, busyNoticed: boolean }
  *   | { kind: 'ownerInput', input: string, originalText: string, key: string, inbox: string | null, source: any, target: any, request: any, host: any, revision: number, legacy: boolean }
  *   | { kind: 'interrupt' })} SessionOp
- * @typedef {{ text: string, options: string[], at: string, generation: number }} Question  what the worker asked through ask_owner; kept until the owner answers or the task leaves waiting
+ * @typedef {{ text: string, options: string[], at: string, generation: number, id?: number }} Question  what the worker asked through ask_owner; kept until the owner answers or the task leaves waiting
  * @typedef {{ options: { taskId: string, title: string }[], allowNew: true }} ChoiceCard
  * @typedef {{
  *   deliveryKey: string, at: string, text: string, detail: string | null, card: ChoiceCard | null, taskIds: string[],
@@ -79,7 +79,7 @@ const REASON_TEXT = {
   prFailed: '没开成 PR',
 }
 const STATE_TEXT = {
-  proposed: '提议中', queued: '排队中', running: '进行中', waiting: '等你', done: '完成',
+  proposed: '提议中', queued: '排队中', running: '进行中', pendingInput: '等待平台处理输入', waiting: '等你', done: '完成',
   failed: '失败', paused: '已暂停', abandoned: '已放弃', expired: '已过期',
 }
 export const statusText = (tasks) => {
@@ -132,7 +132,7 @@ function enqueueOp(tx, op) {
 }
 
 /** Creates only a fixed-generation Host admission obligation, never a generic worker send. */
-function enqueueOwnerInput(tx, task, { key, text, inbox = null, signal = null, recoveryEndSeq = null }) {
+function enqueueOwnerInput(tx, task, { key, text, inbox = null, signal = null, recoveryEndSeq = null, answerQuestionId = null }) {
   const target = { sessionId: task.sessionId, taskId: task.id, taskGeneration: task.generation, startKey: `${task.id}:${task.generation}` }
   const input = signal?.receiptId
     ? { kind: 'ownerMessage', receiptId: signal.receiptId }
@@ -143,7 +143,7 @@ function enqueueOwnerInput(tx, task, { key, text, inbox = null, signal = null, r
     taskId: task.id, kind: 'ownerInput', key, input: text, originalText: text, inbox,
     source: signal ? structuredClone(signal) : null, target,
     request: { key, target: { taskId: task.id, taskGeneration: task.generation, startKey: target.startKey }, input },
-    host: null, revision: 1, legacy: false,
+    host: null, revision: 1, legacy: false, answerQuestionId,
   })
 }
 
@@ -179,6 +179,18 @@ export function choiceCard(tx, about, candidates, text, attempt = 0, detail = un
 const slotsUsed = (tx, workspace, exceptId) =>
   allTasks(tx).filter((t) => t.workspace === workspace && t.id !== exceptId && SLOT_STATES.includes(t.state)).length
 
+/** Recover a pre-key pending operation only from the last recorded state transition. */
+export function recoverPendingInputKey(tx, task) {
+  if (task.pendingInputKey) return task.pendingInputKey
+  const event = tx.store.readEvents(task.id).findLast((row) => row.kind === 'state')
+  if (!event || !['ownerContinue', 'turnInterrupted'].includes(event.data?.event)) return null
+  const candidates = tx.store.scan('op/').map(({ value }) => value).filter((value) =>
+    value.kind === 'ownerInput' && value.taskId === task.id && value.target?.taskGeneration === task.generation &&
+    (event.data.event === 'ownerContinue' ? value.key === `${task.id}:${event.data.seq}`
+      : value.request?.input?.kind === 'recoveryContinuation' && value.request.input.turnEndSeq === task.lastTurnEndSeq))
+  return candidates.length === 1 ? candidates[0].key : null
+}
+
 /**
  * Applies one table event to a task: state, reason, task event, effects, then the workspace queue.
  * Returns false when the table has no row for the event in the task's state.
@@ -191,7 +203,8 @@ export function transit(tx, taskId, event, detail = {}) {
   const from = task.state
   let to = row.to === 'same' ? from : row.to === 'prior' ? (task.attach?.prior.state ?? from) : row.to
   let reason = row.to === 'same' ? task.reason : row.to === 'prior' ? (task.attach?.prior.reason ?? null) : (row.reason ?? null)
-  if (to === 'running' && !SLOT_STATES.includes(from) && slotsUsed(tx, task.workspace, task.id) >= tx.limits.workspaceConcurrency) {
+  if (event === 'slotFree' && task.pendingInputKey) to = 'pendingInput'
+  if ((to === 'running' || to === 'pendingInput') && !SLOT_STATES.includes(from) && slotsUsed(tx, task.workspace, task.id) >= tx.limits.workspaceConcurrency) {
     to = 'queued'
     reason = null
   }
@@ -201,8 +214,9 @@ export function transit(tx, taskId, event, detail = {}) {
   switch (row.effect) {
     case 'resume':
       task.resumed += 1
-      enqueueOwnerInput(tx, task, { text: TEXT.resume, key: `${taskId}:g${task.generation}:resume`, recoveryEndSeq: task.lastTurnEndSeq ?? null })
-      enqueueMessage(tx, { deliveryKey: `task:${taskId}:g${task.generation}:resume`, text: `${label(task)}：回合中断，恢复请求已保留，交由 Host 核查输入资格`, taskIds: [taskId] })
+      task.pendingInputKey = `${taskId}:g${task.generation}:resume:${task.lastTurnEndSeq ?? 'unknown'}`
+      enqueueOwnerInput(tx, task, { text: TEXT.resume, key: task.pendingInputKey, recoveryEndSeq: task.lastTurnEndSeq ?? null })
+      enqueueMessage(tx, { deliveryKey: `task:${taskId}:g${task.generation}:resume:${task.lastTurnEndSeq ?? 'unknown'}`, text: `${label(task)}：回合中断，恢复请求已保留，交由 Host 核查输入资格`, taskIds: [taskId] })
       break
     case 'continue':
       task.refusals = 0
@@ -210,6 +224,7 @@ export function transit(tx, taskId, event, detail = {}) {
       if (task.reason === 'budget') task.budgetBase = { ...task.usage }
       clearRefusals(tx, taskId)
       if (lost) {
+        if (to !== 'queued') to = 'running'
         task.generation += 1
         task.sessionId = null
         task.cursor = 0
@@ -231,6 +246,7 @@ export function transit(tx, taskId, event, detail = {}) {
       if (detail.about) enqueueMessage(tx, { deliveryKey: `ended:${detail.about}`, text: TEXT.ended, taskIds: [taskId], about: detail.about })
       break
   }
+  if (from === 'pendingInput' && to !== 'pendingInput') task.pendingInputKey = null
   task.state = to
   task.reason = reason
   if (to !== 'waiting' && task.question) task.question = null
@@ -238,8 +254,10 @@ export function transit(tx, taskId, event, detail = {}) {
   const seq = record(tx, task, 'state', { event, from, to, reason, ...(detail.note ? { note: detail.note } : {}) })
   if (row.effect === 'continue' && !lost) {
     const entry = detail.about ? tx.store.get(detail.about) : undefined
+    task.pendingInputKey = `${taskId}:${seq}`
+    tx.store.putTask(task)
     enqueueOwnerInput(tx, task, { text: entry?.signal?.text ?? (failedPr ? TEXT.continuePr : TEXT.continue),
-      key: `${taskId}:${seq}`, inbox: detail.about ?? null, signal: entry?.signal ?? null })
+      key: task.pendingInputKey, inbox: detail.about ?? null, signal: entry?.signal ?? null })
   }
   if (from !== to && NOTIFY.has(to) && !detail.quiet)
     enqueueMessage(tx, { deliveryKey: `task:${taskId}:${seq}`, text: `${label(task)}：${stateText(task)}`, ...(detail.message ?? detail.note ? { detail: detail.message ?? detail.note } : {}), taskIds: [taskId] })
@@ -291,6 +309,10 @@ export function admit(tx, workspace) {
     .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : a.id < b.id ? -1 : 1))
   for (const task of queued) {
     if (slotsUsed(tx, workspace, task.id) >= tx.limits.workspaceConcurrency) return
+    if (!task.pendingInputKey && task.sessionId) {
+      const key = recoverPendingInputKey(tx, task)
+      if (key) tx.store.putTask({ ...task, pendingInputKey: key })
+    }
     transit(tx, task.id, 'slotFree')
   }
 }
@@ -339,19 +361,30 @@ export function forward(tx, taskId, entry, { unquoted, picked }) {
     choiceCard(tx, entry.key, [task], `这条提到了别的工作区，要接到 ${label(task)} 吗？`)
     return { kind: 'asked', taskIds: [taskId], reason: 'names another workspace' }
   }
-  // Whatever the owner sends into a task that asked is its answer: the session takes it as its next message.
-  // A question still pending in a running turn is dropped too, or the turn's end would ask it again.
-  if (isAsking(task)) transit(tx, taskId, 'ownerAnswered')
-  else if (task.question) tx.store.putTask({ ...task, question: null })
-  task = getTask(tx, taskId)
+  // Bind an answer to the current ask_owner question, including questions saved before IDs existed.
+  if (task.question && task.question.id === undefined) {
+    const questionSerial = (task.questionSerial ?? 0) + 1
+    task = { ...task, questionSerial, question: { ...task.question, id: questionSerial } }
+    tx.store.putTask(task)
+  }
+  const answerQuestionId = task.question?.id ?? null
   const prior = { state: task.state, reason: task.reason }
+  const reopening = task.state === 'done' || task.state === 'failed'
+  if (reopening) {
+    transit(tx, taskId, 'ownerMessage')
+    task = getTask(tx, taskId)
+  }
   const seq = record(tx, task, 'message', { by: 'owner', inbox: entry.key, unquoted })
   const fresh = getTask(tx, taskId)
+  if (reopening) {
+    fresh.pendingInputKey = `${taskId}:${seq}`
+    tx.store.putTask(fresh)
+  }
   if (unquoted) {
     fresh.attach = { inbox: entry.key, prior, picked, sent: false }
     tx.store.putTask(fresh)
   }
-  enqueueOwnerInput(tx, fresh, { text: body, key: `${taskId}:${seq}`, inbox: entry.key, signal: entry.signal })
+  enqueueOwnerInput(tx, fresh, { text: body, key: `${taskId}:${seq}`, inbox: entry.key, signal: entry.signal, answerQuestionId })
   const now = getTask(tx, taskId)
   if (unquoted || picked) {
     const held = now.state === 'running' || now.state === 'waiting' ? '' : `，${stateText(now)}，可以继续时再送进去`

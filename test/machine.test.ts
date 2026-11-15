@@ -232,10 +232,10 @@ describe('state table (spec §4.3), one test per row', () => {
       expect([...h.channel.delivered.values()].filter((m) => m.text.includes('没开成 PR'))).toHaveLength(1)
       await button(h, 'continue', id)
       await h.tick()
-      expect(h.task(id).state).toBe('running')
+      expect(h.task(id).state).toBe('pendingInput')
       expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continuePr,
         host: { state: 'recoveryUnknown' } } }])
-      h.sessions.nativeResult(sid, 'Host owner separately authorized continuing publication.')
+      h.sessions.deliverRecovery(sid, 'Host owner separately authorized continuing publication.')
       h.sessions.resolve(sid, h.sessions.call(sid, 'publish'), published)
       h.sessions.finish(sid, 'completed', 'PR 开好了')
       await h.tick()
@@ -297,7 +297,7 @@ describe('state table (spec §4.3), one test per row', () => {
     h.sessions.finish(sid, 'cancelled')
     await h.tick()
     expect(h.task(id).state).toBe('running')
-    expect([...h.sessions.sessions.get(sid)!.keys]).toEqual([`${id}:g0:resume`])
+    expect([...h.sessions.sessions.get(sid)!.keys]).toEqual([`${id}:g0:resume:2`])
     expect(h.sessions.sessions.get(sid)!.turns).toBe(2)
   })
 
@@ -360,7 +360,7 @@ describe('state table (spec §4.3), one test per row', () => {
     h.sessions.set(sid, { kind: 'idle', flags: [] })
     await button(h, 'continue', id)
     await h.tick()
-    expect(h.task(id)).toMatchObject({ state: 'running', refusals: 0 })
+    expect(h.task(id)).toMatchObject({ state: 'pendingInput', refusals: 0 })
   })
 
   it('a restart neither counts an owner refusal again nor misses one that arrived while it was down', async () => {
@@ -395,12 +395,12 @@ describe('state table (spec §4.3), one test per row', () => {
     expect([...h.channel.delivered.values()].filter((m) => m.text.includes(TEXT.approvalWaiting))).toHaveLength(2)
   })
 
-  it('paused, owner continues: running in the same session', async () => {
+  it('paused, owner continues: awaits Host admission in the same session', async () => {
     const { h, id, sid } = await paused('budget')
     h.sessions.set(sid, { kind: 'idle', flags: [] })
     await button(h, 'continue', id)
     await h.tick()
-    expect(h.task(id).state).toBe('running')
+    expect(h.task(id).state).toBe('pendingInput')
     expect(h.store.scan('op/')).toMatchObject([{ value: { kind: 'ownerInput', originalText: TEXT.continue,
       host: { state: 'recoveryUnknown' } } }])
     expect(h.sessions.sessions.get(sid)!.inputs).toHaveLength(1)
