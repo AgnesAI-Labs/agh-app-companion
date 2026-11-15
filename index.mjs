@@ -115,7 +115,7 @@ export async function startEngine(
     blockers.push({
       kind: 'capability',
       missing: 'managedSessions',
-      text: 'this host does not provide plugin-managed sessions (init.sessions); the companion cannot open judge or worker sessions',
+      text: 'this host does not provide plugin-managed sessions (init.sessions) with admitInput and inputResult (Extension API 5.21); the companion cannot start',
     })
   const missing = missingSettings(settings)
   if (missing.length)
@@ -263,16 +263,18 @@ export async function startEngine(
   /** @param {unknown} raw */
   const receive = async (raw) => {
     if (!channel && !stopped) await openIfNone()
-    if (!channel || !engine || stopped)
-      return { kind: 'dropped', reason: status().problems[0]?.text ?? 'the companion is stopped' }
+    if (!channel && channelProblem?.startsWith('the pairing could not be read:'))
+      throw new Error(channelProblem)
+    if (stopped || !engine) return { kind: 'dropped', reason: status().problems[0]?.text ?? 'the companion is stopped' }
+    if (!channel)
+      return { kind: 'dropped', reason: status().problems[0]?.text ?? 'the channel is not paired' }
     return channel.receive(raw)
   }
   if (gateway) {
-    // A Host receipt stays pending until the engine confirms its durable inbound state.
+    // Permanent drops are acknowledged; transient failures propagate for Host redelivery.
     gateway.onEvent(async (event) => {
-      const result = await receive(event)
-      if (event?.receiptId && result.kind !== 'accepted' && result.kind !== 'duplicate')
-        throw new Error('COMPANION_RECEIPT_UNCONFIRMED')
+      if (stopped || !engine) throw new Error('the companion is not available to receive the event')
+      await receive(event)
     })
     gateway.onPairingChange(() => {
       void openIfNone().then(() => channel?.refresh())

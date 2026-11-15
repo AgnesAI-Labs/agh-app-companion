@@ -161,7 +161,7 @@ describe('platform refusals', () => {
     expect(h.store.scan('refusal/')).toEqual([])
   })
 
-  it('a refused send parks the task and keeps the owner message for after the continue', async () => {
+  it('a refused input preserves its original key and does not retry after authorization changes', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
@@ -173,11 +173,13 @@ describe('platform refusals', () => {
     await h.tick()
     expect(h.task(id)).toMatchObject({ state: 'paused', reason: 'platform', sessionId: sid })
     expect(h.channel.texts().filter((t) => t.includes('没有授权'))).toHaveLength(1)
+    const op = h.store.scan('op/').find(({ value }) => value.kind === 'ownerInput')!.value
+    expect(op).toMatchObject({ originalText: '再改一下', target: { sessionId: sid }, refusal: { code: 'WORKSPACE_NOT_AUTHORIZED' } })
     h.sessions.gate(() => undefined)
-    await h.say(`继续 ${id}`)
+    h.restart()
     await h.tick()
-    await h.tick()
-    expect(h.sessions.sessions.get(sid)!.inputs).toContain('再改一下')
+    expect(h.sessions.sessions.get(sid)!.inputs).not.toContain('再改一下')
+    expect(h.store.scan('op/').some(({ value }) => value.key === op.key)).toBe(true)
   })
 
   it('a refused judge start is told once, not as the model being down, and its messages stay queued', async () => {

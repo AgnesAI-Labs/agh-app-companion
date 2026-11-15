@@ -1,4 +1,4 @@
-import { enqueueMessage, getTask, label, transit } from './tasks.mjs'
+import { enqueueMessage, getTask, label, recoverPendingInputKey, transit } from './tasks.mjs'
 import { SessionRefusal } from './platform-sessions.mjs'
 
 /** Old sends never acquire the current task session merely because that session is idle. */
@@ -32,6 +32,21 @@ export async function migrateOwnerSend(deps, opKey, op) {
 export async function runOwnerInput(deps, opKey, op) {
   const tx = deps.tx()
   const task = tx.store.getTask(op.taskId)
+  // A queued task has no workspace slot; even inputResult can submit an enqueued Host input.
+  if (task?.state === 'queued') return false
+  if (task?.state === 'pendingInput' && !task.pendingInputKey) {
+    const key = recoverPendingInputKey(tx, task)
+    if (key) {
+      task.pendingInputKey = key
+      tx.store.putTask(task)
+    }
+  }
+  if (op.refusal) {
+    if (task?.state === 'pendingInput' && task.pendingInputKey === op.key) {
+      tx.store.transaction(() => transit(tx, task.id, op.refusal.code === 'SESSION_ARCHIVED' ? 'sessionLost' : 'inputRetained'))
+    }
+    return false
+  }
   if (!op.target?.sessionId && op.target) {
     const binding = tx.store.get(`session-binding/${op.target.startKey}`)
     if (binding && binding.startKey === op.target.startKey && binding.generation === op.target.taskGeneration) {
@@ -45,7 +60,7 @@ export async function runOwnerInput(deps, opKey, op) {
     const title = task ? label(task) : op.taskId
     enqueueMessage(deps.tx(), {
       deliveryKey: `owner-input:${op.key}:${reason}`, taskIds: [op.taskId], about: op.inbox,
-      text: `${title}：这条原话及原发送身份已保留。${reason}。请在 AGH 网页任务台展开“保留的主人消息”，用 Host 入口查看原话和当前决定；飞书上的普通按钮不能作此处置。${location ? `原会话位置：${location}` : ''}`,
+      text: `${title}：这条原话及原发送身份已保留。${reason}。请在 AGH 网页任务台展开“保留的主人消息”查看；${location ? `在 Host 入口处理：${location}` : '目前没有可确认的 Host 处置入口，不会换身份重发。'}`,
       detail: op.originalText,
     })
   }
@@ -65,7 +80,18 @@ export async function runOwnerInput(deps, opKey, op) {
       result = await deps.sessions.admitInput(op.target.sessionId, op.request)
     }
   } catch (error) {
-    if (error instanceof SessionRefusal) notice(error.code, null)
+    if (error instanceof SessionRefusal && !error.retryable) {
+      const store = deps.tx().store
+      store.transaction(() => {
+        const current = store.get(opKey)
+        if (current?.revision !== op.revision) return
+        notice(error.text(task?.workspace ?? ''), null)
+        store.set(opKey, { ...current, refusal: { code: error.code, missing: error.missing } })
+        const fresh = store.getTask(op.taskId)
+        if (fresh?.state === 'pendingInput' && fresh.pendingInputKey === op.key)
+          transit(deps.tx(), op.taskId, error.code === 'SESSION_ARCHIVED' ? 'sessionLost' : 'inputRetained')
+      })
+    }
     return false
   }
   return deps.tx().store.transaction(() => {
@@ -79,8 +105,19 @@ export async function runOwnerInput(deps, opKey, op) {
       if (task) {
         const fresh = getTask(deps.tx(), op.taskId)
         if (fresh.attach?.inbox === op.inbox) store.putTask({ ...fresh, attach: { ...fresh.attach, sent: result.state === 'consumed' || result.state === 'legacySend' } })
-        if (result.state === 'consumed' && (fresh.state === 'done' || fresh.state === 'failed'))
+        if (result.state === 'retained' && fresh.state === 'pendingInput' && fresh.pendingInputKey === op.key)
+          transit(deps.tx(), op.taskId, result.reason === 'sessionArchived' ? 'sessionLost' : 'inputRetained')
+        else if (result.state === 'consumed' && fresh.state === 'pendingInput' && fresh.pendingInputKey === op.key)
+          transit(deps.tx(), op.taskId, 'inputConsumed')
+        else if (result.state === 'consumed' && op.answerQuestionId != null &&
+          fresh.question?.id === op.answerQuestionId && fresh.question.generation === op.target?.taskGeneration) {
+          if (fresh.state === 'waiting') transit(deps.tx(), op.taskId, 'ownerAnswered')
+          else if (fresh.state === 'running') store.putTask({ ...getTask(deps.tx(), op.taskId), question: null })
+        }
+        else if (result.state === 'consumed' && (fresh.state === 'done' || fresh.state === 'failed')) {
           transit(deps.tx(), op.taskId, 'ownerMessage')
+          transit(deps.tx(), op.taskId, 'inputConsumed')
+        }
       }
       store.delete(opKey)
       return true

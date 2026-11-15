@@ -198,6 +198,7 @@ export function fakeGateway(options: { paired?: boolean; running?: boolean; text
         sender: fields.sender ?? { userId: OWNER.userId },
         messageId,
         actionId,
+        ...(fields.receiptId ? { receiptId: fields.receiptId } : {}),
       }
     },
     stranger: { userId: 'u-stranger' },

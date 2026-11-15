@@ -140,6 +140,25 @@ describe('crash points (spec §4.2 step 6, §6, §8 idempotency)', () => {
 })
 
 describe('Host-owned input obligations', () => {
+  it('parks a permanent input refusal with the original key and target across restart', async () => {
+    const h = harness()
+    const id = await h.create('任务一')
+    const sid = h.sessionOf(id)
+    h.sessions.gate(({ op }) => op === 'send' ? { reason: 'OWNER_INPUT_TARGET_MISMATCH' } : undefined)
+    await h.say('保留这句话', { replyTo: id })
+    await h.tick()
+    const pending = h.store.scan('op/').find(({ value }) => value.kind === 'ownerInput')!
+    expect(pending.value).toMatchObject({
+      originalText: '保留这句话', target: { sessionId: sid, taskId: id },
+      refusal: { code: 'OWNER_INPUT_TARGET_MISMATCH' },
+    })
+    const calls = h.sessions.calls.admitInput
+    h.restart()
+    await h.tick()
+    expect(h.sessions.calls.admitInput).toBe(calls)
+    expect(h.store.get(pending.key).key).toBe(pending.value.key)
+  })
+
   it('saves every busy pending body separately and lets another task finish across restart and inbox TTL', async () => {
     const h = harness()
     const waiting = await h.create('任务一', 'api')

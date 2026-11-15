@@ -93,8 +93,6 @@ export function fakeSessions(
   const refuse = (refusal: Refusal | undefined) => {
     if (refusal) throw rpcRefusal(refusal)
   }
-  const sameStart = (a: StartRequest, b: StartRequest) =>
-    JSON.stringify({ ...a, input: '' }) === JSON.stringify({ ...b, input: '' })
   const port: ManagedSessions = {
     async start(request) {
       calls.start++
@@ -105,7 +103,7 @@ export function fakeSessions(
       const existing = byStartKey.get(request.startKey)
       if (existing) {
         const session = get(existing)
-        if (!sameStart(session.request, request)) refuse({ reason: 'START_KEY_REUSED' })
+        if (JSON.stringify(session.request) !== JSON.stringify(request)) refuse({ reason: 'START_KEY_REUSED' })
         if (session.archived) refuse({ reason: 'SESSION_ARCHIVED' })
         return { sessionId: existing, created: false }
       }
@@ -162,14 +160,19 @@ export function fakeSessions(
       const text = input.kind === 'ownerMessage' ? receipts.get(input.receiptId)
         : input.kind === 'legacyOwnerMessage' ? input.text
           : 'Continue the interrupted turn without treating this recovery as a new owner decision.'
-      if (text === undefined) throw rpcRefusal({ reason: 'CAPABILITY_DENIED' })
+      const lastTurn = [...session.events].reverse().find((event) => event.kind === 'turn')
+      const recoveryValid = input.kind !== 'recoveryContinuation' ||
+        (lastTurn?.seq === input.turnEndSeq && (lastTurn.status === 'cancelled' || lastTurn.status === 'failed'))
+      const state = input.kind === 'ownerMessage' && text === undefined ? 'needsOwner'
+        : input.kind === 'legacyOwnerMessage' || !recoveryValid ? 'recoveryUnknown' : 'enqueued'
       const result: ManagedInputResult = {
-        state: input.kind === 'legacyOwnerMessage' ? 'recoveryUnknown' : 'enqueued',
+        state,
         inputId: request.key, version: 1,
-        reason: input.kind === 'legacyOwnerMessage' ? 'legacySourceUnknown' : 'eligible',
+        reason: state === 'needsOwner' ? 'receiptUnknown' : state === 'recoveryUnknown'
+          ? (input.kind === 'legacyOwnerMessage' ? 'legacySourceUnknown' : 'recoveryUnverified') : 'eligible',
         reviewLocation: `/?session=${sessionId}&ownerInput=${request.key}`,
       }
-      const entry = { request: structuredClone(request), text, result }
+      const entry = { request: structuredClone(request), text: text ?? '', result }
       session.admissions.set(request.key, entry)
       pump(session)
       return entry.result
@@ -234,6 +237,13 @@ export function fakeSessions(
     },
     nativeResult(sessionId: string, text: string) {
       begin(get(sessionId), text)
+    },
+    deliverRecovery(sessionId: string, text: string) {
+      const session = get(sessionId)
+      const pending = [...session.admissions.values()].find((entry) => entry.result.state === 'recoveryUnknown')
+      if (!pending) throw new Error('no recovery input to deliver')
+      pending.result = { ...pending.result, state: 'consumed' }
+      begin(session, text)
     },
     /** Refuses matching starts and sends the way the platform's gates do, until set back. */
     gate(next: Gate) {

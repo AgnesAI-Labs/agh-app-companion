@@ -260,10 +260,10 @@ export async function buildDesk(deps, input = {}) {
     .sort()
     .map((workspace) => ({ workspace, tasks: (waiting.get(workspace) ?? []).slice(0, GROUP_MAX).map((id) => view(/** @type {Task} */ (store.getTask(id)))) }))
 
-  const known = new Set(['queued', 'running', 'waiting', 'paused', 'done', 'failed', 'abandoned'])
+  const known = new Set(['queued', 'running', 'pendingInput', 'waiting', 'paused', 'done', 'failed', 'abandoned'])
   const usageDay = store.get(`usage/${at.slice(0, 10)}`)
   const ratio = store.usage().ratio
-  const unfinished = tasks.filter((t) => ['queued', 'running', 'waiting', 'paused'].includes(t.state))
+  const unfinished = tasks.filter((t) => ['queued', 'running', 'pendingInput', 'waiting', 'paused'].includes(t.state))
   const reason = submitBlock(deps.status, ratio, limits)
   const result = {
     at,
@@ -274,7 +274,7 @@ export async function buildDesk(deps, input = {}) {
     workspaces: deps.workspaces.slice(0, 32),
     tasks: {
       needsYou: ofState('waiting').slice(0, GROUP_MAX).map(view),
-      running: ofState('running').slice(0, GROUP_MAX).map(view),
+      running: tasks.filter((t) => t.state === 'running' || t.state === 'pendingInput').slice(0, GROUP_MAX).map(view),
       queued,
       paused: ofState('paused').slice(0, GROUP_MAX).map(view),
       recent: recent.slice(0, GROUP_MAX).map(view),
@@ -288,7 +288,8 @@ export async function buildDesk(deps, input = {}) {
     ownerInputs: store.scan('op/').filter(({ value }) => value.kind === 'ownerInput' || value.kind === 'send').slice(0, GROUP_MAX).map(({ value }) => ({
       key: value.key, taskId: value.taskId, text: value.originalText ?? value.input,
       sessionId: value.target?.sessionId ?? null, inputId: value.host?.inputId ?? null,
-      state: value.host?.state ?? 'historyUnknown', reason: value.host?.reason ?? '原目标或发送事实尚未证实',
+      state: value.refusal ? 'refused' : value.host?.state ?? 'historyUnknown',
+      reason: value.refusal ? `平台拒绝：${value.refusal.code}；原话与原目标保留，未自动重试。` : value.host?.reason ?? '原目标或发送事实尚未证实',
     })),
     ownerInputsTotal: store.scan('op/').filter(({ value }) => value.kind === 'ownerInput' || value.kind === 'send').length,
     judge: judgeView(store),

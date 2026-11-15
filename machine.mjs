@@ -2,11 +2,11 @@
  * Task states and the one table that moves a task between them. The rows mirror the state table
  * in the companion design §4.3 in order; the last three rows are the additions named beside them.
  *
- * @typedef {'proposed' | 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'paused' | 'abandoned' | 'expired'} TaskState
+ * @typedef {'proposed' | 'queued' | 'running' | 'pendingInput' | 'waiting' | 'done' | 'failed' | 'paused' | 'abandoned' | 'expired'} TaskState
  * @typedef {'approvalExpired' | 'sessionFailed' | 'budget' | 'hops' | 'sessionLost' | 'turnInterrupted' | 'refused' | 'platform' | 'prFailed'} StateReason
  * @typedef {'ownerConfirm' | 'ownerRefuse' | 'proposalExpired' | 'sessionWaiting' | 'sessionAsked' | 'questionRecovered' | 'ownerAnswered' | 'approvalExpired'
  *   | 'sessionCompleted' | 'sessionFailed' | 'overBudget' | 'overHops' | 'sessionLost' | 'turnInterrupted'
- *   | 'refusedThrice' | 'prFailed' | 'ownerContinue' | 'ownerMessage' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
+ *   | 'refusedThrice' | 'prFailed' | 'ownerContinue' | 'ownerMessage' | 'inputConsumed' | 'inputRetained' | 'ownerStop' | 'slotFree' | 'handback' | 'platformRefused'} TaskEventName
  * @typedef {'resume' | 'continue' | 'reopen' | 'interrupt' | 'endedReply' | 'restore'} RowEffect
  * @typedef {{
  *   from: readonly TaskState[], on: TaskEventName, to: TaskState | 'same' | 'prior',
@@ -15,8 +15,8 @@
  */
 
 /** States that hold one of the workspace's session slots (limits.workspaceConcurrency). */
-export const SLOT_STATES = Object.freeze(/** @type {TaskState[]} */ (['running', 'waiting']))
-export const UNFINISHED = Object.freeze(/** @type {TaskState[]} */ (['proposed', 'queued', 'running', 'waiting', 'paused']))
+export const SLOT_STATES = Object.freeze(/** @type {TaskState[]} */ (['running', 'pendingInput', 'waiting']))
+export const UNFINISHED = Object.freeze(/** @type {TaskState[]} */ (['proposed', 'queued', 'running', 'pendingInput', 'waiting', 'paused']))
 const ACTIVE = SLOT_STATES
 
 /** @type {readonly Row[]} */
@@ -36,11 +36,13 @@ export const TRANSITIONS = Object.freeze([
   { from: ACTIVE, on: 'overBudget', to: 'paused', reason: 'budget', effect: 'interrupt' },
   { from: ACTIVE, on: 'overHops', to: 'paused', reason: 'hops', effect: 'interrupt' },
   { from: ACTIVE, on: 'sessionLost', to: 'paused', reason: 'sessionLost' },
-  { from: ['running'], on: 'turnInterrupted', when: (t) => t.resumed === 0, to: 'running', effect: 'resume' },
+  { from: ['running'], on: 'turnInterrupted', when: (t) => t.resumed === 0, to: 'pendingInput', effect: 'resume' },
   { from: ['running'], on: 'turnInterrupted', when: (t) => t.resumed > 0, to: 'paused', reason: 'turnInterrupted' },
   { from: ACTIVE, on: 'refusedThrice', to: 'paused', reason: 'refused', effect: 'interrupt' },
-  { from: ['paused'], on: 'ownerContinue', to: 'running', effect: 'continue' },
-  { from: ['done', 'failed'], on: 'ownerMessage', to: 'running', effect: 'reopen' },
+  { from: ['paused'], on: 'ownerContinue', to: 'pendingInput', effect: 'continue' },
+  { from: ['done', 'failed'], on: 'ownerMessage', to: 'pendingInput', effect: 'reopen' },
+  { from: ['pendingInput'], on: 'inputConsumed', to: 'running' },
+  { from: ['pendingInput'], on: 'inputRetained', to: 'paused', reason: 'platform' },
   { from: UNFINISHED, on: 'ownerStop', to: 'abandoned', effect: 'interrupt' },
   { from: ['abandoned', 'expired'], on: 'ownerMessage', to: 'same', effect: 'endedReply' },
   // Decision round 16: a task waits here while its workspace has no free slot.

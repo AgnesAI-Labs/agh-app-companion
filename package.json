@@ -55,7 +55,7 @@
       {
         "id": "ext:@agh-apps/companion/main",
         "export": "main",
-        "apiRange": "^5.15.0",
+        "apiRange": "^5.21.0",
         "runtime": "in-process",
         "inject": [
           "services",

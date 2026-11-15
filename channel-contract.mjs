@@ -56,7 +56,7 @@
  *   messageId: string, at: string, chat: ChatRef, sender: Sender, text: string, quotedMessageId?: string, receiptId?: string,
  * } | {
  *   kind: 'action', origin: 'owner', pairingId: string, instanceId: string, eventId: string,
- *   messageId: string, at: string, chat: ChatRef, sender: Sender, actionId: string,
+ *   messageId: string, at: string, chat: ChatRef, sender: Sender, actionId: string, receiptId?: string,
  * }} ChannelEvent  the platform's ChannelTargetEvent
  * @typedef {{
  *   id: string, instanceId: string, provider: string, userId: string, chatId: string, label: string,

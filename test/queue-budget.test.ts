@@ -50,6 +50,34 @@ describe('one workspace runs its tasks one at a time (decision round 16)', () =>
     expect(h.task(second).state).toBe('running')
   })
 
+  it('holds a continue admission until the workspace slot is free', async () => {
+    const h = harness({ limits: { taskTokens: 10 } })
+    const first = await h.create('修登录')
+    const sid = h.sessionOf(first)
+    h.sessions.setUsage(sid, { tokens: 20, cost: null })
+    await h.tick()
+    expect(h.task(first).state).toBe('paused')
+    const second = await h.create('加日志')
+    let queries = 0
+    const inputResult = h.sessions.port.inputResult
+    h.sessions.port.inputResult = async (...args) => { queries++; return inputResult(...args) }
+    await h.signal({ kind: 'button', action: 'continue', taskId: first })
+    await h.tick()
+    const key = h.task(first).pendingInputKey
+    expect(h.task(first).state).toBe('queued')
+    expect(key).toBeTruthy()
+    expect(queries).toBe(0)
+    expect(h.sessions.calls.admitInput).toBe(0)
+    h.restart()
+    await h.tick()
+    expect(queries).toBe(0)
+    h.sessions.finish(h.sessionOf(second), 'completed', 'ok')
+    await h.tick()
+    expect(h.task(first)).toMatchObject({ state: 'pendingInput', pendingInputKey: key })
+    expect(queries).toBeGreaterThan(0)
+    expect(h.store.scan('op/')).toMatchObject([{ value: { key, host: { state: 'recoveryUnknown' } } }])
+  })
+
   it('the concurrency number is the only knob', async () => {
     const h = harness({ limits: { workspaceConcurrency: 2 } })
     await h.create('修登录')
@@ -88,6 +116,9 @@ describe('budget from session usage', () => {
     await h.tick()
     h.sessions.set(sid, { kind: 'idle', flags: [] })
     await h.signal({ kind: 'button', action: 'continue', taskId: id })
+    await h.tick()
+    expect(h.task(id).state).toBe('pendingInput')
+    h.sessions.deliverRecovery(sid, '主人已在 Host 确认继续。')
     await h.tick()
     expect(h.task(id).state).toBe('running')
     h.sessions.setUsage(sid, { tokens: 260, cost: null })

@@ -71,7 +71,7 @@ describe('ask_owner', () => {
     await h.say('1')
     await h.tick()
     expect(toJudge(h)).toBe(judged)
-    expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe(`${TEXT.attach}\n\n1`)
+    expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toBe('1')
     expect(h.task(id)).toMatchObject({ state: 'running', question: null })
     expect(h.entry('inbox/im:e2').disposition).toMatchObject({ kind: 'appended', taskIds: [id] })
   })
@@ -98,17 +98,38 @@ describe('ask_owner', () => {
     expect(h.task(id)).toMatchObject({ state: 'waiting', question: { text: '要带周末吗？', options: [] } })
   })
 
-  it('an owner message that reaches the task before its turn ends answers the pending question, so the task is not asked again', async () => {
+  it('an old consumed answer cannot clear the next ask_owner question', async () => {
+    const h = harness()
+    const { id, sid, ask } = await asking(h)
+    await h.say('1')
+    await h.tick()
+    const first = h.store.scan('input-result/').find(({ value }) => value.taskId === id)!.value
+    expect(first.answerQuestionId).toBeDefined()
+    await ask(sid, { question: '第二个问题？', options: ['甲', '乙'] })
+    h.sessions.finish(sid, 'completed', '请再选一次')
+    await h.tick()
+    const second = h.task(id).question
+    expect(second.id).not.toBe(first.answerQuestionId)
+    h.store.set('op/000000000', first)
+    h.restart()
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'waiting', question: { id: second.id, text: '第二个问题？' } })
+    const { answerQuestionId, ...legacy } = first
+    h.store.set('op/000000000', legacy)
+    await h.tick()
+    expect(h.task(id)).toMatchObject({ state: 'waiting', question: { id: second.id, text: '第二个问题？' } })
+  })
+
+  it('keeps an early answer tied to the question until Host consumes it', async () => {
     const h = harness()
     const id = await h.create('修登录')
     const sid = h.sessionOf(id)
     await asker(h)(sid, { question: '怎么做？', options: OPTIONS })
     await h.say(`#${id} 用方案一`)
     await h.tick()
-    expect(h.task(id).question).toBeNull()
+    expect(h.task(id).question).toMatchObject({ text: '怎么做？' })
     h.sessions.finish(sid, 'completed', '做完了')
     await h.tick()
-    expect(h.channel.texts().some((t) => t.includes('等你回答'))).toBe(false)
     expect(h.sessions.sessions.get(sid)!.inputs.at(-1)).toContain('用方案一')
     expect(h.task(id).question).toBeNull()
   })

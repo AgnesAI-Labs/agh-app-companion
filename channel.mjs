@@ -155,7 +155,7 @@ export async function openChannel({ gateway, store, receive }) {
       now = await gateway.pairing()
     } catch (error) {
       status = `the pairing could not be read: ${error instanceof Error ? error.message : String(error)}`
-      return null
+      throw error
     }
     if (!now) status = STATUS.notPaired
     else if (now.id !== bound.id || now.userId !== bound.userId || now.chatId !== bound.chatId || now.instanceId !== bound.instanceId) status = STATUS.rebound
@@ -180,7 +180,7 @@ export async function openChannel({ gateway, store, receive }) {
   const clickSignal = (event) => {
     const row = outboxByMessage(event.messageId)
     if (!row) return 'not a message the companion sent'
-    const base = { source: `channel:${bound.instanceId}`, eventId: event.eventId, at: event.at, origin: /** @type {const} */ ('owner') }
+    const base = { source: `channel:${bound.instanceId}`, eventId: event.eventId, at: event.at, origin: /** @type {const} */ ('owner'), ...(event.receiptId ? { receiptId: event.receiptId } : {}) }
     const [verb, rest = ''] = event.actionId.split(/:(.*)/s)
     if (verb === 'pick' && row.card && (rest === 'new' || row.card.options.some((o) => o.taskId === rest))) return { ...base, kind: 'choice', card: row.deliveryKey, pick: rest }
     if (verb === 'answer' && row.ask && /^[1-9]\d?$/.test(rest)) {

@@ -292,8 +292,9 @@ describe('companion.submit', () => {
     expect(desk.submit({ kind: 'message', text: '再补一个单测', replyTo: id }, 'op-1')).toEqual({ ok: true, result: 'accepted' })
     await h.tick()
     expect(h.judgeInputs).toHaveLength(judged)
-    expect(h.task(id).state).toBe('running')
-    expect(h.sessions.sessions.get(h.sessionOf(id))!.inputs.at(-1)).toBe('再补一个单测')
+    expect(h.task(id).state).toBe('pendingInput')
+    expect(h.sessions.sessions.get(h.sessionOf(id))!.inputs).not.toContain('再补一个单测')
+    expect(h.store.scan('op/')).toMatchObject([{ value: { originalText: '再补一个单测', host: { state: 'recoveryUnknown' } } }])
   })
 
   it('a repeated operation id executes once, and says the same thing the second time', async () => {
